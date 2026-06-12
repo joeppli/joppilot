@@ -1,7 +1,7 @@
 # Jöppli - Project Charter
 
 **Version:** 1.0 · **Date:** June 11, 2026
-**Company:** Jöppli — Autonomous Recycling Logistics · Glarus, Switzerland · kontakt@joeppli.ch
+**Company:** Jöppli - Autonomous Recycling Logistics · Glarus, Switzerland · kontakt@joeppli.ch
 
 ## 1. Project Purpose
 
@@ -36,10 +36,10 @@ The weak link in the circular economy is that the system relies on a single "mot
 
 | Phase | Period | Objective | Funding |
 |---|---|---|---|
-| Phase 0 — Simulation | 2026 | Simulation validation in Alt-Wiedikon | Existing resources |
-| Phase 1 — Pilot | 2027 | Pilot operation with ERZ in Zürich | Pre-Seed CHF 0.8–1M |
-| Phase 2 — Multi-city | 2027–2030 | 3–5 Swiss cities, 5–15 vehicles, in-house fleet management and autonomy stack | Series A CHF 6–8M |
-| Phase 3 — EU | 2030+ | EU market entry, 50+ operational vehicles, CHF 5–15M ARR | — |
+| Phase 0 - Simulation | 2026 | Simulation validation in Alt-Wiedikon | Existing resources |
+| Phase 1 - Pilot | 2027 | Pilot operation with ERZ in Zürich | Pre-Seed CHF 0.8–1M |
+| Phase 2 - Multi-city | 2027–2030 | 3–5 Swiss cities, 5–15 vehicles, in-house fleet management and autonomy stack | Series A CHF 6–8M |
+| Phase 3 - EU | 2030+ | EU market entry, 50+ operational vehicles, CHF 5–15M ARR | - |
 | Exit | 2032–2035 |
 
 **Market Target:** The Swiss market is CHF 1.5B (~6 million tons of waste annually); the EU municipal waste and recycling collection services market is CHF 30B/year. Reaching CHF 6M ARR with 50 vehicles in 2030 ≈ 0.4% of the Swiss market. Unit economics assumption: 1 vehicle = 0.5 km² urban area.

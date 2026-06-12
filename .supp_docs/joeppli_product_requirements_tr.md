@@ -1,7 +1,4 @@
-# Jöppli — Ürün Gereksinimleri (Product Requirements)
-
-**Sürüm:** 1.0 · **Tarih:** 11 Haziran 2026
-**Kapsam:** Resident App + Otonom Filo + City Console — tek sistem olarak çalışacak şekilde tasarlanır ("One app, one fleet, one console").
+# Jöppli - Ürün Gereksinimleri (Product Requirements)
 
 ## A. Fonksiyonel Gereksinimler
 
@@ -12,7 +9,7 @@
 | FR-1.1 | Kullanıcı, kapıdan geri dönüşüm alımı talep edebilmelidir. |
 | FR-1.2 | Kullanıcı yük boyutu seçebilmelidir: Small (1–2 standart torba), Medium (3–5), Big (6–10), Mega (tam yük / araç kapasitesi). |
 | FR-1.3 | Uygulama, atanan aracın canlı ETA'sını ve talep edilen yük bilgisini göstermelidir. |
-| FR-1.4 | See what you saved ? |
+| FR-1.4 | Uygulama, geri dönüşüme ne kadar katkıda bulunulduğunu göstermelidir.  |
 | FR-1.5 | Talep durumu değişikliklerinde (atandı, yolda, tamamlandı) kullanıcı bilgilendirilmelidir. |
 
 ### FR-2 · Otonom Filo (Araç + Sevkiyat)

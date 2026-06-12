@@ -1,8 +1,5 @@
 # Jöppli - Proje Bildirgesi
 
-**Sürüm:** 1.0 · **Tarih:** 11 Haziran 2026
-**Şirket:** Jöppli — Autonomous Recycling Logistics · Glarus, İsviçre · kontakt@joeppli.ch
-
 ## 1. Projenin Amacı
 
 Jöppli, geri dönüşüm toplama noktasını hanenin kapısına getiren otonom bir geri dönüşüm lojistiği sistemi kurar. Elektrikli, sürücüsüz mini kamyonlar (Microlino'dan daha dar) talep üzerine kapıya gelir; belediyeler sabit toplama altyapısı kurmadan ve personel eklemeden, hane düzeyinde veriyle desteklenen kapıdan geri dönüşüm hizmeti sunar.
@@ -36,10 +33,10 @@ Döngüsel ekonominin zayıf halkası, sistemin her hanedeki "tek motive kişiye
 
 | Faz | Dönem | Hedef | Finansman |
 |---|---|---|---|
-| Faz 0 — Simülasyon | 2026 | Alt-Wiedikon'da simülasyon doğrulaması | Mevcut kaynaklar |
-| Faz 1 — Pilot | 2027 | Zürich'te ERZ ile pilot operasyon | Pre-Seed CHF 0.8–1M |
-| Faz 2 — Çoklu şehir | 2027–2030 | 3–5 İsviçre şehri, 5–15 araç, şirket içi filo yönetimi ve otonomi teknolojisi | Series A CHF 6–8M |
-| Faz 3 — AB | 2030+ | AB pazarına giriş, 50+ operasyonel araç, CHF 5–15M ARR | — |
+| Faz 0 - Simülasyon | 2026 | Alt-Wiedikon'da simülasyon doğrulaması | Mevcut kaynaklar |
+| Faz 1 - Pilot | 2027 | Zürich'te ERZ ile pilot operasyon | Pre-Seed CHF 0.8–1M |
+| Faz 2 - Çoklu şehir | 2027–2030 | 3–5 İsviçre şehri, 5–15 araç, şirket içi filo yönetimi ve otonomi teknolojisi | Series A CHF 6–8M |
+| Faz 3 - AB | 2030+ | AB pazarına giriş, 50+ operasyonel araç, CHF 5–15M ARR | - |
 | Exit | 2032–2035 |
 
 **Pazar hedefi:** İsviçre pazarı CHF 1.5B (yılda ~6 milyon ton atık); AB belediye atık ve geri dönüşüm toplama hizmetleri pazarı CHF 30B/yıl. 2030'da 50 araçla CHF 6M ARR ≈ İsviçre pazarının %0.4'ü. Birim ekonomi varsayımı: 1 araç = 0.5 km² kentsel bölge.

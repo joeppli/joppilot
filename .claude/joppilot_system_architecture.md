@@ -1,4 +1,0 @@
-istemin ana bileşenleri, aralarındaki iletişim, kullanılacak teknoloji yığını (tech stack), veri akışı, üçüncü parti entegrasyonlar. Mimari diyagramlar (C4 modeli yaygın bir yaklaşımdır) burada yer alır.
-
-
-EN SON

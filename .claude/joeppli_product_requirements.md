@@ -1,7 +1,7 @@
 # Jöppli - Product Requirements
 
 **Version:** 1.0 · **Date:** June 11, 2026
-**Scope:** Resident App + Autonomous Fleet + City Console — designed to operate as a unified system ("One app, one fleet, one console").
+**Scope:** Resident App + Autonomous Fleet + City Console - designed to operate as a unified system ("One app, one fleet, one console").
 
 ## A. Functional Requirements
 
