@@ -23,28 +23,28 @@ Architecturally significant constraints that shape the architecture (full text l
 ```mermaid
 flowchart LR
     OP["<b>Super Admin</b><br/>(Full Authority)<br/>user / vehicle / role management<br/>emergency control"]
-    SA["<b/>Operator<br/>live monitoring / remote driving / diagnostic intervention"]
-    AUTH["Authority<br/>"]
+    SA["<b>Operator</b><br/>live monitoring / remote driving / diagnostic intervention"]
+    AUTH["<b>Authority</b><br/>cantonal / FEDRO"]
 
-    subgraph JOP["<br/>Joppilot Platform (AWS)"]
+    subgraph JOP["Joppilot Platform (AWS)"]
       CORE["Cloud services<br/>+ operator/admin console"]
     end
 
     VEH["Jöppli<br/>VEA + ADS"]
     CELL["Cellular carriers"]
-    MAP["Mapbox + swisstopo<br/>maps · routing"]
-    MSG["Notifications<br/>"]
+    MAP["swisstopo + MapLibre/Mapbox<br/>base map render"]
+    MSG["Notifications<br/>SES / End User Messaging"]
     OP --> CORE
     SA --> CORE
     CORE -->|"on-demand data / event notification"| AUTH
     AUTH -->|"zone / permit configuration"| CORE
-    CORE <-->|"command · telemetry · video · announcement<br/>(A-boundary)"| VEH
+    CORE <-->|"command · telemetry · video · announcement · route/static feed<br/>(A-boundary)"| VEH
     VEH -.->|"connects"| CELL
-    CORE -->|"map render / routing"| MAP
+    CORE -->|"base map tiles"| MAP
     CORE -->|"operational alert"| MSG
 ```
 
-The real external dependencies are the **vehicle**, **cellular carriers**, and **map providers** (Mapbox + swisstopo). Notifications are an AWS managed service (part of the platform). There is no separate console for authorities (on-demand data/EDR + event notifications); cantonal approvals enter the system as **zone configuration**.
+The real external dependencies are the **vehicle**, **cellular carriers**, and the **map tile source** (swisstopo, rendered with MapLibre/Mapbox). Notifications are an AWS managed service (part of the platform). **Path-level routing and static map components (stops, signs, lights, lanes) come from the vehicle's ADS/HD map** (via the B-boundary, surfaced over the A-boundary) - Joppilot renders them and performs dispatch sequencing, but does not compute driving routes. There is no separate console for authorities (on-demand data/EDR + event notifications); cantonal approvals enter the system as **zone configuration**.
 
 ## 3. C4 Level 2 - Container
 
@@ -66,7 +66,7 @@ flowchart TB
         TEL["Telemetry<br/>Ingest"]
         VIDG["Video<br/>Gateway"]
         FLT["Fleet & Mission<br/>+ Pre-departure check"]
-        ROUTE["Route<br/>Optimization"]
+        ROUTE["Dispatch<br/>(sequence + show ADS route)"]
         MAN["Maneuver<br/>Proposal"]
         ZN["Zone /<br/>Geofence"]
         RCY["Recycling<br/>Data"]
@@ -149,8 +149,6 @@ sequenceDiagram
     CL->>VE: Channel-2 (carrier B)
     VE->>VE: First arrival is applied, duplicate command_id is discarded
     Note over VE: If both channels are down, the local deadman transitions to safe mode
-
-
 ```
 
 ### 4.3 Failsafe flow
@@ -163,6 +161,7 @@ sequenceDiagram
     Note over VE: Latch is NOT released even if connectivity returns (RES-04)
     VE->>CL: Once connected, buffered logs sync losslessly (RES-02)
 ```
+
 ## 5. Architectural Realization of Zone-Based Authorization
 
 Mode (Mode 1/2) ↔ zone type rules, the **zone-mode matrix**, and the **test permit exception** are defined in the **ICD**. Architecturally, this is realized as a **two-layer** enforcement:
@@ -178,7 +177,7 @@ The final, authoritative enforcement resides **on the vehicle** (the cloud can e
 
 ## 6. Technology Stack (managed-first)
 
-> **Principle:** Default to a **managed (off-the-shelf) AWS service**. Self-hosting is recommended only if (a) the managed service would create a **major problem** in the future, (b) **no clear managed service** meets the need, or (c) a managed service cannot satisfy a **mandatory requirement** (low latency, security, data residency) (PLT-03). This document contains only **two** exceptions; both are marked.
+> **Principle:** Default to a **managed (off-the-shelf) AWS service**. Self-hosting is recommended only if (a) the managed service would create a **major problem** in the future, (b) **no clear managed service** meets the need, or (c) a managed service cannot satisfy a **mandatory requirement** (low latency, security, data residency) (PLT-03). This document contains only **two** self-host exceptions (both marked); plus a deliberate, justified use of **non-AWS map providers** (swisstopo/MapLibre/Mapbox) for Swiss-authoritative geodata.
 
 ### 6.1 Cloud layer
 
@@ -193,12 +192,14 @@ The final, authoritative enforcement resides **on the vehicle** (the cloud can e
 | Video/audio | **KVS WebRTC** *(POC gate)* | managed signaling+TURN+recording, on-demand, two-way audio | **If POC fails:** LiveKit/mediasoup + coturn (EC2) - *exception (c)* |
 | Command channel | **WebRTC Data Channel + IoT Core MQTT QoS1 fallback** | two paths; fencing token; dual-path E-STOP (RES-05) | - |
 | Relational + telemetry | **Aurora PostgreSQL** (+ pg_partman) | Timestream LiveAnalytics closed to new customers, TimescaleDB not available on RDS | alt: Timestream for InfluxDB (behind a DAO) |
-| ORM / migration | **Prisma** | type-safe queries, migration management; natural fit with TS backend | - |
+| ORM / migration | **Prisma** (relational/business data) | type-safe queries, migration management; natural fit with TS backend | - |
+| Telemetry hot-path | **Raw/batched insert** (not Prisma) | high-frequency writes bypass ORM overhead; partition mgmt via pg_partman/raw SQL | - |
 | Raw data / archive | **S3 + Glue + Athena**, Kinesis Firehose | managed data lake | - |
 | Event recording (EDR) | **S3 + Object Lock (WORM)** | tamper-evident evidence (SEC-06, LEG-04/05) | - |
 | Cache/session/lock | **ElastiCache (Valkey)** | low latency, single-operator lock (SEC-05) | - |
-| Map rendering (frontend) | **Mapbox GL JS** | high-performance map component; customizable styles/layers; used together with swisstopo for Switzerland-specific needs | - |
-| Map data source | **swisstopo (geo.admin.ch)** | Switzerland's authoritative, free geodata source; cantonal boundaries, tunnels/alpine roads, LV95 coordinates; used for route/zone definition | - |
+| Map rendering (frontend) | **MapLibre GL JS** (or Mapbox GL JS) | renders base map from swisstopo tiles; MapLibre avoids 3rd-party token / US telemetry; **route/path is not computed here** | - |
+| Map data source | **swisstopo (geo.admin.ch)** | Switzerland's authoritative, free geodata; cantonal boundaries, tunnels/alpine roads, LV95; used for base map + zone/route **definition** | - |
+| Route / path + ETA | **ADS / HD map (via B-boundary)** - *open* | path-level routing and static components (stops, signs, lights, lanes) come from the autonomy HD map; Joppilot runs **no routing engine** (keeps location data in-region, adds no 3rd self-host); Joppilot only renders the route and performs **dispatch sequencing** (stop ordering, ~10 vehicles) | feed schema TBD with ADS team (OP-9) |
 | Geofence management | **Custom service** (Aurora + Valkey cache + edge push) | polygon authoring → stored in Aurora → cached in Valkey → pushed to the vehicle edge; **enforcement resides on the vehicle**, no dependency on a cloud service | - |
 | Internal events / alerts | **EventBridge + SNS + SQS** | managed | - |
 | Notifications | **SES + AWS End User Messaging** | managed (Pinpoint closed) | - |
@@ -208,7 +209,7 @@ The final, authoritative enforcement resides **on the vehicle** (the cloud can e
 | VPC endpoints | **ECR, S3, CloudWatch Logs, Secrets Manager, KMS, STS** | controls NAT data-processing costs | - |
 | IaC / CI-CD | **Terraform + GitHub Actions** | reproducible; both regions (Frankfurt + Zurich) bootstrapped via IaC | - |
 
-> **Note - Map selection rationale:** Mapbox GL JS + swisstopo was chosen over Amazon Location Service. swisstopo is Switzerland's official geodata source and authoritatively provides Swiss-specific data such as cantonal boundaries, alpine roads, and tunnels. Since geofence enforcement already takes place on the vehicle edge (see Section 5), there is no need for a dependency on a managed cloud geofence service; polygon data is stored in Aurora, cached in Valkey, and pushed to vehicles.
+> **Note - Map & routing rationale:** swisstopo is Switzerland's official geodata source (authoritative cantonal boundaries, alpine roads, tunnels); the base map is rendered client-side with MapLibre GL JS (Mapbox GL JS optional). **Routing was intentionally moved out of Joppilot:** the vehicle's ADS already plans the path on its HD map (which also defines static components - stops, signs, lights, lanes), so Joppilot consumes a **planned-route + ETA + static-component feed** from the ADS over the B-boundary rather than computing routes itself. This keeps all location data in-region (no off-EU egress), avoids adding a third self-host engine, and leaves driving routing where it belongs (the ADS). Joppilot's remaining map duties are **display** (overlay the ADS route on the swisstopo base map) and **dispatch sequencing** (which vehicle visits which stops, in what order). **This split is pending confirmation that the ADS can publish a clean route/ETA feed - see OP-9; a coarse fallback ETA is tracked in OP-10.**
 
 > **Note - Ingress architecture:** All client traffic (SPA + API) enters through CloudFront. API calls follow the chain CloudFront → API Gateway (WAF + Cognito Authorizer) → VPC Link → **internal ALB** → ECS Fargate. ECS is never publicly exposed; WAF and authorization are consolidated on a single surface.
 
@@ -221,7 +222,8 @@ The final, authoritative enforcement resides **on the vehicle** (the cloud can e
 | Other edge tasks | **Greengrass V2 components** | CAN decode, telemetry/media streaming, buffer, OTA - managed |
 | Secure key storage | **HSM / TPM** | keys non-extractable, tamper detection (SEC-08) |
 | Connectivity | **Multi-carrier bonded modem** | availability (RES-05); *not a legal requirement; does not solve common dead zones - safety relies on the failsafe* |
-| B-boundary protocol | ROS 2 / gRPC / custom - **open** | jointly with the ADS team (AP) |
+| B-boundary protocol | ROS 2 / gRPC / custom - **open** | jointly with the ADS team (OP-5) |
+| Route/static feed | **planned route + ETA + static components from ADS HD map** - **open** | consumed over the B-boundary; format/cadence TBD with ADS team (OP-9) |
 
 ### 6.3 Client layer
 
@@ -233,19 +235,19 @@ The final, authoritative enforcement resides **on the vehicle** (the cloud can e
 
 **Languages:** front + back **TypeScript**; **Rust only in the on-vehicle safety kernel**. If a hot-path bottleneck is measured in a cloud service, that service may be migrated to Go (open decision).
 
-**Backend framework:** **NestJS** (TypeScript). Modular architecture, built-in WebSocket/MQTT support, automatic OpenAPI 3.1 generation (decorator-based), dependency injection, Guard/Interceptor pattern (RBAC, fencing token validation). **Prisma** is used as the ORM.
+**Backend framework:** **NestJS** (TypeScript). Modular architecture, built-in WebSocket/MQTT support, automatic OpenAPI 3.1 generation (decorator-based), dependency injection, Guard/Interceptor pattern (RBAC, fencing token validation). **Prisma** is used as the ORM for relational/business data.
 
-> **Note - Prisma limitation:** If the booking system is brought into scope in the future, PostgreSQL's `EXCLUDE USING gist` constraint (double-booking prevention) is not natively supported in Prisma; this constraint must be added via a raw SQL migration.
+> **Note - Prisma limitations:** (1) **Telemetry:** Prisma does not manage native PostgreSQL partitioning and adds overhead on high-frequency writes; the telemetry ingest hot-path uses pg_partman + raw/batched inserts (or IoT Rules → Firehose/Aurora), not Prisma. (2) **Booking (future):** PostgreSQL's `EXCLUDE USING gist` constraint (double-booking prevention) is not natively supported in Prisma; if booking is brought into scope, this must be added via a raw SQL migration.
 
 ## 7. Third-Party / External Dependencies
 
 | Dependency | Purpose | Critical? | Note |
 |---|---|---|---|
 | **Cellular carriers** (Swisscom/Sunrise/Salt) | Vehicle ↔ cloud | Yes | bonded multi-carrier; **availability** (RES-05), not a legal requirement |
-| **Mapbox** | map rendering (frontend) | Yes | GL JS; style/layer customization |
-| **swisstopo (geo.admin.ch)** | Swiss geodata source | Yes | free, authoritative; route/zone definition, LV95↔WGS84 conversion |
+| **swisstopo (geo.admin.ch)** | Swiss geodata source | Yes | free, authoritative; base map + zone/route definition, LV95↔WGS84 conversion |
+| **MapLibre / Mapbox GL JS** | base map rendering (frontend) | Medium | render only; **no routing** (routing comes from ADS); MapLibre keeps it 3rd-party-free |
 | **Notifications** (SES / End User Messaging) | operational alerts | No | AWS managed |
-| **OEM / ADS** | vehicle hardware + autonomy | Yes | only via the **B-boundary** (SCP-03) |
+| **OEM / ADS** | vehicle hardware + autonomy + **planned route/ETA/static-component feed** | Yes | only via the **B-boundary** (SCP-03); route feed schema open (OP-9) |
 
 (Municipality data systems, municipality reporting, resident notifications, payments: out of scope or not yet finalized - separate documents.)
 
@@ -317,14 +319,14 @@ The binding current scale and camera/vehicle targets are defined in the **constr
 | AD-11 | Backbone: IoT Core + Greengrass V2 | - |
 | AD-12 | Video: KVS WebRTC (POC gate; self-host SFU if it fails) | RTP-06 |
 | AD-13 | Identity: Cognito | SEC-03 |
-| AD-14 | Telemetry: Aurora partitions (Timestream closed, TimescaleDB not on RDS) | RTP-02/03 |
-| AD-15 | Maps: **Mapbox GL JS + swisstopo**; geofence via custom service (Aurora + Valkey + edge push) | RTP-04/05 |
+| AD-14 | Telemetry: Aurora partitions (Timestream closed, TimescaleDB not on RDS); raw/batched writes, not Prisma | RTP-02/03 |
+| AD-15 | Maps: base render via swisstopo + MapLibre/Mapbox; **route/path + static components from ADS/HD map via B-boundary**; Joppilot does dispatch sequencing only; geofence via custom service (Aurora + Valkey + edge push) | RTP-04/05 |
 | AD-16 | **Edge safety kernel: Rust** (self-host exception) | RES-01, SEC-08 |
 | AD-17 | Frankfurt primary + Zurich DR | DAT-08, PLT-02 |
 | AD-18 | Languages: TS (front+back), Rust (edge) | - |
 | AD-19 | Ingress: CloudFront → API Gateway (WAF + Cognito) → VPC Link → internal ALB → ECS | SEC |
 | AD-20 | Frontend: React + TypeScript + Vite (SPA, S3+CloudFront) | - |
-| AD-21 | Backend: NestJS + TypeScript; ORM: Prisma | - |
+| AD-21 | Backend: NestJS + TypeScript; ORM: Prisma (relational only) | - |
 
 ### 11.2 Open decision points
 | # | Topic | Decision owner |
@@ -337,3 +339,5 @@ The binding current scale and camera/vehicle targets are defined in the **constr
 | OP-6 | Cantonal (GL/ZH/BS) zone condition parameter model | Authorization process (LEG-06) |
 | OP-7 | Heartbeat period/thresholds, Mode 2 watchdog timers | Edge/embedded team |
 | OP-8 | Whether booking (rental) will be built | Product team (SCP-05) |
+| OP-9 | **ADS → Joppilot route feed:** planned route + ETA + static map components (format, cadence) over the B-boundary; confirm the ADS can publish a clean feed | ADS + Joppilot |
+| OP-10 | **Fallback dispatch ETA** when the ADS route feed is unavailable (e.g. straight-line × factor) so sequencing does not stall | Engineering |
