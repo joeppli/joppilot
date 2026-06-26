@@ -1,0 +1,58 @@
+{
+  "$ref": "#/definitions/Heartbeat",
+  "definitions": {
+    "Heartbeat": {
+      "type": "object",
+      "properties": {
+        "vehicleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timestamp": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "healthy": {
+          "type": "boolean"
+        },
+        "vehicleState": {
+          "type": "string",
+          "enum": [
+            "IDLE",
+            "SUPERVISED_ASSIST",
+            "REMOTE_DRIVE",
+            "SAFE_STOPPED",
+            "MISSION_PAUSED"
+          ]
+        },
+        "currentZone": {
+          "type": "string",
+          "enum": [
+            "public_approved_route",
+            "public_test_permit",
+            "depot",
+            "private",
+            "permitted_test",
+            "out_of_tod"
+          ]
+        },
+        "latched": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "vehicleId",
+        "timestamp",
+        "seq",
+        "healthy",
+        "vehicleState"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

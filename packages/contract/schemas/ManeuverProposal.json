@@ -1,0 +1,80 @@
+{
+  "$ref": "#/definitions/ManeuverProposal",
+  "definitions": {
+    "ManeuverProposal": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "vehicleId": {
+          "type": "string"
+        },
+        "reasonCode": {
+          "type": "string"
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "sceneSummary": {
+              "type": "string"
+            },
+            "sensorRefs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "sceneSummary",
+            "sensorRefs"
+          ],
+          "additionalProperties": false
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "optionId": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "expectedResult": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "optionId",
+              "description",
+              "expectedResult"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "validityWindowMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "defaultOnTimeout": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposalId",
+        "vehicleId",
+        "reasonCode",
+        "context",
+        "options",
+        "validityWindowMs",
+        "defaultOnTimeout"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
