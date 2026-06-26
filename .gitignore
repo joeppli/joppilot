@@ -1,1 +1,69 @@
+# ──────────────────────────────────────────────────────────────
+# Joppilot monorepo .gitignore
+# Goal: a fresh `git clone` + `pnpm install` + `docker compose up`
+# must be enough to build & run every workspace on another machine.
+# ──────────────────────────────────────────────────────────────
+
+# ── Docs ──────────────────────────────────────────────────────
+# .claude/  -> authoritative docs (ICD, architecture, constraints): TRACKED on purpose.
+# .supp_docs/ -> supplementary material (translations, pdfs, decks): kept out of VCS.
 .supp_docs/
+
+# ── Dependencies ──────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+
+# ── Logs ──────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Build / cache output ─────────────────────────────────────
+# NOTE: packages/contract/schemas/*.json are generated from Zod but
+# intentionally committed — the Rust edge reads them at runtime and
+# does not run the TS build. Do NOT ignore them here.
+dist/
+build/
+out/
+coverage/
+.turbo/
+.next/
+.vite/
+*.tsbuildinfo
+.eslintcache
+
+# ── Rust edge (Cargo) ────────────────────────────────────────
+# Cargo.lock IS committed (binary crate) — only build output is ignored.
+target/
+**/*.rs.bk
+
+# ── Environment files ────────────────────────────────────────
+# Real env files stay local; *.example templates are committed so a
+# clone can `cp services/<svc>/.env.example services/<svc>/.env`.
+.env
+.env.local
+.env.*.local
+!.env.example
+!**/.env.example
+
+# ── Secrets / certificates (e.g. AWS IoT mTLS for the edge) ──
+certs/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# ── Databases ─────────────────────────────────────────────────
+*.sqlite
+*.db
+
+# ── IDE / OS ─────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
