@@ -1,0 +1,24 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// NOTE: Telemetry is no longer persisted via Prisma. The telemetry hot-path uses
+// raw batched inserts in the telemetry service (Architecture AD-14). The command
+// service owns only the EDR/audit table below, so this is now the single Prisma
+// schema in the monorepo (no shared-client duplication).
+model EventDataRecord {
+  id          String   @id @default(uuid())
+  commandId   String   @unique
+  vehicleId   String
+  issuer      String
+  action      String
+  status      String   // e.g. "PENDING", "ACK", "REJECTED"
+  details     Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
