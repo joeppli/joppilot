@@ -1,0 +1,518 @@
+use rumqttc::{AsyncClient, MqttOptions, QoS, Event, Incoming, TlsConfiguration, Transport};
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tokio::time;
+use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use jsonschema::JSONSchema;
+use serde_json::Value;
+
+// ------------------------------------------------------------------
+// Wire types (mirror @joppilot/contract)
+// ------------------------------------------------------------------
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[allow(non_camel_case_types)]
+enum OperationMode {
+    MODE1,
+    MODE2,
+    DIAG,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct TelemetryPayload {
+    #[serde(rename = "vehicleId")]
+    vehicle_id: String,
+    timestamp: u64,
+    location: Location,
+    #[serde(rename = "speedKmh")]
+    speed_kmh: f32,
+    #[serde(rename = "vehicleState")]
+    vehicle_state: String,
+    mode: OperationMode,
+    battery: BatteryTelemetry,
+    sensors: Vec<SensorStatus>,
+    #[serde(rename = "computeHealth")]
+    compute_health: ComputeHealth,
+    connection: ConnectionQuality,
+    #[serde(rename = "currentZone")]
+    current_zone: String,
+}
+
+// Vehicle → cloud heartbeat (ICD §3/§9). "I'm here, I'm healthy" + latch state.
+#[derive(Serialize, Debug)]
+struct Heartbeat {
+    #[serde(rename = "vehicleId")]
+    vehicle_id: String,
+    timestamp: u64,
+    seq: u64,
+    healthy: bool,
+    #[serde(rename = "vehicleState")]
+    vehicle_state: String,
+    #[serde(rename = "currentZone")]
+    current_zone: String,
+    latched: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct BatteryTelemetry {
+    #[serde(rename = "voltageV")]
+    voltage_v: f32,
+    #[serde(rename = "currentA")]
+    current_a: f32,
+    #[serde(rename = "temperatureC")]
+    temperature_c: f32,
+    percent: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct SensorStatus {
+    id: String,
+    #[serde(rename = "type")]
+    sensor_type: String,
+    status: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ComputeHealth {
+    #[serde(rename = "cpuPercent")]
+    cpu_percent: f32,
+    #[serde(rename = "ramPercent")]
+    ram_percent: f32,
+    #[serde(rename = "temperatureC")]
+    temperature_c: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ConnectionQuality {
+    #[serde(rename = "rttMs")]
+    rtt_ms: u32,
+    #[serde(rename = "packetLossPercent")]
+    packet_loss_percent: f32,
+    carrier: String,
+    band: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Location {
+    lat: f64,
+    lng: f64,
+}
+
+#[derive(Deserialize, Debug)]
+struct FencingToken {
+    #[serde(rename = "tokenId")]
+    #[allow(dead_code)]
+    token_id: String,
+    #[serde(rename = "issuedAt")]
+    issued_at: u64,
+}
+
+#[derive(Deserialize, Debug)]
+struct CommandEnvelope {
+    #[serde(rename = "commandId")]
+    command_id: String,
+    #[serde(rename = "sessionId")]
+    #[allow(dead_code)]
+    session_id: String,
+    #[serde(rename = "vehicleId")]
+    #[allow(dead_code)]
+    vehicle_id: String,
+    #[allow(dead_code)]
+    issuer: String,
+    mode: OperationMode,
+    token: FencingToken,
+    timestamp: u64,
+    #[serde(rename = "ttlMs")]
+    ttl_ms: u64,
+    payload: Value,
+}
+
+// ------------------------------------------------------------------
+// Zone model (ICD §1). The vehicle is the authoritative gate: it
+// derives its own zone from its own position and enforces the matrix.
+//
+// "Approved territory" is a hard-coded polygon (a rectangle here);
+// inside it the vehicle is in its CONFIGURED zone type, outside it the
+// vehicle is `out_of_tod` (outside approved zone) → all movement is
+// refused and a safe-stop is latched.
+// ------------------------------------------------------------------
+fn is_in_approved_territory(lat: f64, lng: f64) -> bool {
+    let min_lat = 47.3700;
+    let max_lat = 47.3800;
+    let min_lng = 8.5300;
+    let max_lng = 8.5500;
+    lat >= min_lat && lat <= max_lat && lng >= min_lng && lng <= max_lng
+}
+
+fn effective_zone(lat: f64, lng: f64, configured_zone: &str) -> String {
+    if is_in_approved_territory(lat, lng) {
+        configured_zone.to_string()
+    } else {
+        "out_of_tod".to_string()
+    }
+}
+
+/// Mirror of contract `isModeAllowedInZone` / ZONE_MODE_MATRIX (ICD §1).
+fn mode_allowed_in_zone(zone: &str, mode: &OperationMode) -> bool {
+    match zone {
+        "public_approved_route" => matches!(mode, OperationMode::MODE1 | OperationMode::DIAG),
+        "public_test_permit" | "depot" | "private" | "permitted_test" => true,
+        "out_of_tod" => matches!(mode, OperationMode::DIAG),
+        _ => false,
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+fn ack_json(command_id: &str, status: &str, reason: Option<&str>) -> String {
+    match reason {
+        Some(r) => format!(
+            r#"{{"commandId":"{}","status":"{}","reason":"{}"}}"#,
+            command_id, status, r
+        ),
+        None => format!(r#"{{"commandId":"{}","status":"{}"}}"#, command_id, status),
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    println!("Joppilot Edge Safety Kernel starting...");
+
+    // Configured zone for this vehicle (distributed as zone configuration; ICD §1).
+    let configured_zone = env::var("EDGE_ZONE_TYPE").unwrap_or_else(|_| "public_approved_route".to_string());
+    println!("Configured zone type: {}", configured_zone);
+
+    // --- Load the command JSON Schema from the contract (CONTRACT.md) ---
+    // The safety kernel validates every command against the contract schema.
+    let schema_path = env::var("EDGE_SCHEMA_PATH")
+        .unwrap_or_else(|_| "../../packages/contract/schemas/CommandEnvelope.json".to_string());
+    let command_schema: Option<Arc<JSONSchema>> = match fs::read_to_string(&schema_path) {
+        Ok(raw) => match serde_json::from_str::<Value>(&raw) {
+            Ok(v) => match JSONSchema::compile(&v) {
+                Ok(c) => {
+                    println!("Loaded command schema from {}", schema_path);
+                    Some(Arc::new(c))
+                }
+                Err(e) => { eprintln!("⚠️ Failed to compile schema: {}. SCHEMA_INVALID gate disabled.", e); None }
+            },
+            Err(e) => { eprintln!("⚠️ Failed to parse schema JSON: {}. SCHEMA_INVALID gate disabled.", e); None }
+        },
+        Err(e) => { eprintln!("⚠️ Could not read schema at {}: {}. SCHEMA_INVALID gate disabled.", schema_path, e); None }
+    };
+
+    let aws_endpoint = env::var("AWS_IOT_ENDPOINT").unwrap_or_default();
+    let is_aws = !aws_endpoint.is_empty();
+
+    let host = if is_aws { aws_endpoint } else { "localhost".to_string() };
+    let port = if is_aws { 8883 } else { 1883 };
+
+    let mut mqttoptions = MqttOptions::new("edge-vehicle-001", host.clone(), port);
+    mqttoptions.set_keep_alive(Duration::from_secs(5));
+
+    if is_aws {
+        println!("Configuring mTLS for AWS IoT Core...");
+        let ca_cert = fs::read(env::var("AWS_CERT_ROOT_CA_PATH").expect("Missing Root CA")).expect("Failed to read Root CA");
+        let client_cert = fs::read(env::var("AWS_CERT_CERT_PATH").expect("Missing Client Cert")).expect("Failed to read Client Cert");
+        let client_key = fs::read(env::var("AWS_CERT_PRIVATE_KEY_PATH").expect("Missing Private Key")).expect("Failed to read Private Key");
+
+        let tls_config = TlsConfiguration::Simple {
+            ca: ca_cert,
+            alpn: None,
+            client_auth: Some((client_cert, rumqttc::Key::RSA(client_key))),
+        };
+        mqttoptions.set_transport(Transport::Tls(tls_config));
+    }
+
+    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+
+    let vehicle_id = "VEH-001";
+    let estop_topic = format!("joppilot/v1/vehicles/{}/estop", vehicle_id);
+    let command_topic = format!("joppilot/v1/vehicles/{}/command", vehicle_id);
+    let ack_topic = format!("joppilot/v1/vehicles/{}/command/ack", vehicle_id);
+    let telemetry_topic = format!("joppilot/v1/vehicles/{}/telemetry", vehicle_id);
+    let heartbeat_up_topic = format!("joppilot/v1/vehicles/{}/heartbeat", vehicle_id); // vehicle → cloud
+    let deadman_topic = format!("joppilot/v1/vehicles/{}/deadman", vehicle_id);         // cloud → vehicle ping
+
+    client.subscribe(&estop_topic, QoS::AtLeastOnce).await.unwrap();
+    client.subscribe(&command_topic, QoS::AtLeastOnce).await.unwrap();
+    client.subscribe(&deadman_topic, QoS::AtLeastOnce).await.unwrap();
+    println!("Subscribed to E-STOP, COMMAND and DEADMAN topics");
+
+    // -------------------- Shared state --------------------
+    let location_state = Arc::new(Mutex::new((47.3769, 8.5417)));
+    // Safe-stop latch (RES-04). Once engaged it stays engaged across reconnects;
+    // only an authorized CLEAR_SAFE_STOP releases it.
+    let latched = Arc::new(Mutex::new(false));
+    // Newest fencing-token issuedAt the vehicle has seen (ICD §4/§8 single-operator lock).
+    let newest_token = Arc::new(Mutex::new(0u64));
+    // Idempotency store: command_id → exact ack json (ICD §4 "applied once, same response").
+    let seen_commands: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    // Cloud liveness for the local watchdog.
+    let last_contact_time = Arc::new(Mutex::new(now_ms()));
+    // The watchdog only arms after the FIRST cloud contact: a vehicle that has
+    // never connected is not in "connection lost" (ICD §9 is about loss).
+    let watchdog_armed = Arc::new(Mutex::new(false));
+
+    // -------------------- Local watchdog / deadman (RES-01/04) --------------------
+    {
+        let watchdog_last_contact = last_contact_time.clone();
+        let watchdog_latch = latched.clone();
+        let watchdog_armed_c = watchdog_armed.clone();
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                if !*watchdog_armed_c.lock().unwrap() { continue; }
+                let last = *watchdog_last_contact.lock().unwrap();
+                let now = now_ms();
+                if now > last + 3000 {
+                    let mut l = watchdog_latch.lock().unwrap();
+                    if !*l {
+                        *l = true;
+                        println!("⚠️ LOCAL WATCHDOG TRIGGERED! Cloud silent >3s → latched SAFE-STOP (local, zero connectivity).");
+                    }
+                }
+            }
+        });
+    }
+
+    // -------------------- Telemetry loop (10Hz / RTP-02) --------------------
+    {
+        let client_clone = client.clone();
+        let telemetry_topic_clone = telemetry_topic.clone();
+        let location_for_telemetry = location_state.clone();
+        let latch_for_telemetry = latched.clone();
+        let zone_for_telemetry = configured_zone.clone();
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_millis(100));
+            let mut speed = 10.0;
+            let mut tick_count = 0;
+            // Oscillate within approved territory so the vehicle does not drift away.
+            let mut dir = 1.0_f64;
+
+            loop {
+                interval.tick().await;
+                tick_count += 1;
+
+                let is_latched = *latch_for_telemetry.lock().unwrap();
+
+                if tick_count % 10 == 0 && !is_latched {
+                    speed = if speed > 25.0 { 10.0 } else { speed + 1.0 };
+                }
+                if is_latched { speed = 0.0; }
+
+                let (lat, lng) = {
+                    let mut loc = location_for_telemetry.lock().unwrap();
+                    if !is_latched {
+                        loc.0 += 0.00002 * dir;
+                        loc.1 += 0.00002 * dir;
+                        if loc.0 > 47.3795 || loc.0 < 47.3705 { dir = -dir; }
+                    }
+                    (loc.0, loc.1)
+                };
+
+                let zone = effective_zone(lat, lng, &zone_for_telemetry);
+                let state = if is_latched { "SAFE_STOPPED" } else { "IDLE" };
+
+                let payload = TelemetryPayload {
+                    vehicle_id: vehicle_id.to_string(),
+                    timestamp: now_ms(),
+                    location: Location { lat, lng },
+                    speed_kmh: speed,
+                    vehicle_state: state.to_string(),
+                    mode: OperationMode::MODE1,
+                    battery: BatteryTelemetry { voltage_v: 400.0, current_a: 10.5, temperature_c: 30.0, percent: 85.0 },
+                    sensors: vec![SensorStatus { id: "CAM_FRONT".to_string(), sensor_type: "CAMERA".to_string(), status: "OK".to_string() }],
+                    compute_health: ComputeHealth { cpu_percent: 20.0, ram_percent: 45.0, temperature_c: 55.0 },
+                    connection: ConnectionQuality { rtt_ms: 15, packet_loss_percent: 0.0, carrier: "Simulated".to_string(), band: "5G".to_string() },
+                    current_zone: zone,
+                };
+
+                let json = serde_json::to_string(&payload).unwrap();
+                client_clone.publish(&telemetry_topic_clone, QoS::AtMostOnce, false, json).await.unwrap();
+            }
+        });
+    }
+
+    // -------------------- Vehicle → cloud heartbeat (1Hz, ICD §3/§9) --------------------
+    {
+        let client_clone = client.clone();
+        let hb_topic = heartbeat_up_topic.clone();
+        let location_for_hb = location_state.clone();
+        let latch_for_hb = latched.clone();
+        let zone_for_hb = configured_zone.clone();
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(1));
+            let mut seq: u64 = 0;
+            loop {
+                interval.tick().await;
+                seq += 1;
+                let (lat, lng) = *location_for_hb.lock().unwrap();
+                let is_latched = *latch_for_hb.lock().unwrap();
+                let hb = Heartbeat {
+                    vehicle_id: vehicle_id.to_string(),
+                    timestamp: now_ms(),
+                    seq,
+                    healthy: !is_latched,
+                    vehicle_state: if is_latched { "SAFE_STOPPED".to_string() } else { "IDLE".to_string() },
+                    current_zone: effective_zone(lat, lng, &zone_for_hb),
+                    latched: is_latched,
+                };
+                let json = serde_json::to_string(&hb).unwrap();
+                client_clone.publish(&hb_topic, QoS::AtLeastOnce, false, json).await.unwrap();
+            }
+        });
+    }
+
+    // -------------------- Command ingest / 2nd gate (authoritative) --------------------
+    loop {
+        if let Ok(Event::Incoming(Incoming::Publish(p))) = eventloop.poll().await {
+            // Any inbound message proves the cloud is alive → reset & arm the watchdog.
+            *last_contact_time.lock().unwrap() = now_ms();
+            *watchdog_armed.lock().unwrap() = true;
+
+            // The deadman topic is just a liveness ping; nothing to validate.
+            if p.topic == deadman_topic {
+                continue;
+            }
+
+            // 1) Schema validation (SCHEMA_INVALID, ICD §4) -----------------
+            let raw: Value = match serde_json::from_slice(&p.payload) {
+                Ok(v) => v,
+                Err(_) => { eprintln!("⛔ Dropped non-JSON payload on {}", p.topic); continue; }
+            };
+            if let Some(schema) = &command_schema {
+                if schema.validate(&raw).is_err() {
+                    let cid = raw.get("commandId").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    println!("⛔ COMMAND REJECTED! Schema invalid. ID: {}", cid);
+                    let ack = ack_json(cid, "REJECTED", Some("SCHEMA_INVALID"));
+                    client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                    continue;
+                }
+            }
+
+            let envelope: CommandEnvelope = match serde_json::from_value(raw) {
+                Ok(e) => e,
+                Err(e) => { eprintln!("⛔ Envelope deserialize failed after schema pass: {}", e); continue; }
+            };
+            let cid = envelope.command_id.clone();
+            let action = envelope.payload.get("action").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+            // 2) Idempotency (DUPLICATE_COMMAND, ICD §4) --------------------
+            // A repeated command_id is applied once and gets the SAME response.
+            if let Some(prev) = seen_commands.lock().unwrap().get(&cid).cloned() {
+                println!("↩️  DUPLICATE command {} → replaying stored ACK", cid);
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, prev).await.unwrap();
+                continue;
+            }
+
+            // Helper closure cannot borrow `client` across awaits cleanly, so we
+            // finalize inline: compute the ack, store it, publish it.
+            let now = now_ms();
+
+            // 3) TTL (TTL_EXPIRED, ICD §4) ---------------------------------
+            if now > envelope.timestamp + envelope.ttl_ms {
+                println!("⛔ COMMAND REJECTED! TTL expired. ID: {}", cid);
+                let ack = ack_json(&cid, "REJECTED", Some("TTL_EXPIRED"));
+                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                continue;
+            }
+
+            // 4) Fencing token re-validation (INVALID_TOKEN, ICD §4/§8) ----
+            {
+                let mut newest = newest_token.lock().unwrap();
+                if envelope.token.issued_at < *newest {
+                    drop(newest);
+                    println!("⛔ COMMAND REJECTED! Stale fencing token. ID: {}", cid);
+                    let ack = ack_json(&cid, "REJECTED", Some("INVALID_TOKEN"));
+                    seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                    client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                    continue;
+                }
+                if envelope.token.issued_at > *newest { *newest = envelope.token.issued_at; }
+            }
+
+            // E-STOP and SAFE_STOP always engage the latch and ACK (highest priority).
+            let is_estop = p.topic == estop_topic || action == "E_STOP";
+            let is_safe_stop = action == "SAFE_STOP";
+
+            if is_estop || is_safe_stop {
+                *latched.lock().unwrap() = true;
+                let tag = if is_estop { "🚨 E-STOP" } else { "🛑 SAFE-STOP" };
+                println!("{} APPLIED → latched. ID: {}", tag, cid);
+                let ack = ack_json(&cid, "ACK", None);
+                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                continue;
+            }
+
+            // 5) Latch gate (SAFE_STOP_LATCHED, ICD §9) --------------------
+            // While latched, only an authorized CLEAR_SAFE_STOP is accepted.
+            {
+                let mut l = latched.lock().unwrap();
+                if *l {
+                    if action == "CLEAR_SAFE_STOP" {
+                        *l = false;
+                        drop(l);
+                        println!("🔓 SAFE-STOP latch released by authorized CLEAR_SAFE_STOP. ID: {}", cid);
+                        let ack = ack_json(&cid, "ACK", None);
+                        seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                        client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                    } else {
+                        drop(l);
+                        println!("⛔ COMMAND REJECTED! Vehicle is in latched safe-stop. ID: {}", cid);
+                        let ack = ack_json(&cid, "REJECTED", Some("SAFE_STOP_LATCHED"));
+                        seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                        client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                    }
+                    continue;
+                }
+            }
+
+            // A CLEAR_SAFE_STOP while not latched is a harmless no-op ACK.
+            if action == "CLEAR_SAFE_STOP" {
+                let ack = ack_json(&cid, "ACK", None);
+                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                continue;
+            }
+
+            // 6) Zone / mode matrix (GEOFENCE_VIOLATION / MODE_MISMATCH, ICD §1) ---
+            let (lat, lng) = *location_state.lock().unwrap();
+            let zone = effective_zone(lat, lng, &configured_zone);
+
+            if zone == "out_of_tod" && matches!(envelope.mode, OperationMode::MODE1 | OperationMode::MODE2) {
+                // Outside the approved zone → refuse and latch a safe-stop (ICD §1/§9).
+                *latched.lock().unwrap() = true;
+                println!("⛔ COMMAND REJECTED! Outside approved zone ({:.4},{:.4}) → latched SAFE-STOP. ID: {}", lat, lng, cid);
+                let ack = ack_json(&cid, "REJECTED", Some("GEOFENCE_VIOLATION"));
+                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                continue;
+            }
+
+            if !mode_allowed_in_zone(&zone, &envelope.mode) {
+                // e.g. Mode 2 on a public approved route → the vehicle refuses.
+                println!("⛔ COMMAND REJECTED! Mode {:?} not allowed in zone '{}'. ID: {}", envelope.mode, zone, cid);
+                let ack = ack_json(&cid, "REJECTED", Some("MODE_MISMATCH"));
+                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                continue;
+            }
+
+            // 7) Accepted ------------------------------------------------
+            println!("✅ COMMAND ACCEPTED '{}' mode={:?} zone='{}' ({:.4},{:.4}). ID: {}", action, envelope.mode, zone, lat, lng, cid);
+            let ack = ack_json(&cid, "ACK", None);
+            seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+            client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+        }
+    }
+}
