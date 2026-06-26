@@ -1,1 +1,0 @@
-Wireframe'ler, mockup'lar, prototipler (Figma vb. araçlarla) ve varsa tasarım sistemi.
