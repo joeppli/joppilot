@@ -44,7 +44,11 @@ client.on('connect', async () => {
   const sendPing = () => client.publish(T.deadman, JSON.stringify({ timestamp: Date.now() }));
   sendPing();
   const ping = setInterval(sendPing, 800); // keep the edge watchdog happy
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, 500));
+
+  // Clear any prior safe-stop latch (e.g. from watchdog or prior test runs)
+  const pre = base({ payload: { action: 'CLEAR_SAFE_STOP' }, token: { tokenId: uuid(), issuedAt: Date.now() } });
+  pub(T.cmd, pre); await waitAck(pre.commandId);
 
   const c = base(); delete c.ttlMs;
   pub(T.cmd, c); check('schema-invalid', await waitAck(c.commandId), 'REJECTED', 'SCHEMA_INVALID');

@@ -11,6 +11,7 @@ import {
   OperationMode,
   ZoneType,
   inferMode,
+  isDiagActionAllowedInZone,
 } from '@joppilot/contract';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -27,11 +28,11 @@ export class CommandController {
 
   @Post(':vehicleId/take-control')
   async takeControl(@Param('vehicleId') vehicleId: string, @Body('operatorId') operatorId: string) {
-    const token = await this.sessionService.takeControl(vehicleId, operatorId);
-    if (!token) {
+    const result = await this.sessionService.takeControl(vehicleId, operatorId);
+    if (!result) {
       throw new UnauthorizedException('Vehicle is currently locked by another operator.');
     }
-    return { status: 'success', token };
+    return { status: 'success', token: result.token, issuedAt: result.issuedAt };
   }
 
   @Post(':vehicleId/heartbeat')
@@ -88,6 +89,16 @@ export class CommandController {
       });
     }
 
+    // 3b. Disruptive diagnostic actions deferred on public routes (ICD §1 footnote)
+    const zone = this.zoneService.getZone(vehicleId);
+    if (!alwaysAllowed && !isDiagActionAllowedInZone(cmd.action, zone)) {
+      await this.logEdr(uuidv4(), vehicleId, operatorId, cmd.action, 'REJECTED', { reason: 'DIAG_DEFERRED', zone });
+      throw new ForbiddenException({
+        reason: 'DIAG_DEFERRED',
+        details: `Disruptive diagnostic action '${cmd.action}' is deferred on zone '${zone}'. Move to depot/idle first.`,
+      });
+    }
+
     return this.dispatch(vehicleId, operatorId, token, mode, cmd);
   }
 
@@ -117,10 +128,24 @@ export class CommandController {
     return this.dispatch(vehicleId, operatorId, token, 'MODE1', { action: 'CLEAR_SAFE_STOP' });
   }
 
+  /** ICD §8: Admin/operator handover — elevates token, old token rejected on vehicle. */
+  @Post(':vehicleId/handover')
+  async handover(
+    @Param('vehicleId') vehicleId: string,
+    @Body('operatorId') operatorId: string,
+  ) {
+    const result = await this.sessionService.handover(vehicleId, operatorId);
+    if (!result) throw new BadRequestException('Handover failed');
+    await this.logEdr(uuidv4(), vehicleId, operatorId, 'HANDOVER', 'ACK', { newOperator: operatorId, issuedAt: result.issuedAt });
+    this.logger.log(`HANDOVER completed for ${vehicleId} → ${operatorId}`);
+    return { status: 'success', token: result.token, issuedAt: result.issuedAt };
+  }
+
   /** Admin/permit operation: (re)configure a vehicle's zone type (controlled, logged). */
   @Post(':vehicleId/zone')
   async setZone(@Param('vehicleId') vehicleId: string, @Body('zone') zone: ZoneType) {
     this.zoneService.setZone(vehicleId, zone);
+    await this.logEdr(uuidv4(), vehicleId, 'ADMIN', 'ZONE_CHANGE', 'ACK', { zone });
     return { status: 'success', vehicleId, zone };
   }
 
@@ -136,13 +161,15 @@ export class CommandController {
     channel: 'command' | 'estop' = 'command'
   ) {
     const commandId = uuidv4();
+    const issuedAt = await this.sessionService.getTokenIssuedAt(vehicleId);
     const envelope: CommandEnvelope = {
       commandId,
+      correlationId: uuidv4(),
       sessionId: token,
       vehicleId,
       issuer: operatorId,
       mode,
-      token: { tokenId: token, issuedAt: Date.now() },
+      token: { tokenId: token, issuedAt },
       timestamp: Date.now(),
       ttlMs: payload.action === 'E_STOP' ? 5000 : 2000,
       payload,

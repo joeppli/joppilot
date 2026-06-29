@@ -7,6 +7,7 @@ import { PrismaService } from './prisma.service';
 export class MqttService implements OnModuleInit, OnModuleDestroy {
   private client: mqtt.MqttClient;
   private readonly logger = new Logger(MqttService.name);
+  private maneuverHandler: ((topic: string, message: Buffer) => void) | null = null;
 
   constructor(private prisma: PrismaService) {}
 
@@ -38,6 +39,12 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       this.client.subscribe('joppilot/v1/vehicles/+/command/ack', (err) => {
         if (!err) this.logger.log('Subscribed to command ACKs');
       });
+      this.client.subscribe('joppilot/v1/vehicles/+/maneuver/proposal', (err) => {
+        if (!err) this.logger.log('Subscribed to maneuver proposals');
+      });
+      this.client.subscribe('joppilot/v1/vehicles/+/maneuver/status', (err) => {
+        if (!err) this.logger.log('Subscribed to maneuver status');
+      });
     });
 
     this.client.on('message', async (topic, message) => {
@@ -53,6 +60,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
           this.logger.error('Failed to parse/update ACK', e);
         }
       }
+      if (topic.includes('/maneuver/') && this.maneuverHandler) {
+        this.maneuverHandler(topic, message);
+      }
     });
 
     this.client.on('error', (error) => {
@@ -62,6 +72,10 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy() {
     this.client.end();
+  }
+
+  subscribeManeuver(handler: (topic: string, message: Buffer) => void) {
+    this.maneuverHandler = handler;
   }
 
   publish(topic: string, payload: any) {
