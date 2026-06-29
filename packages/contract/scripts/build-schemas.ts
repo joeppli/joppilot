@@ -6,6 +6,7 @@ import {
   TelemetryPayloadSchema,
   CommandAckSchema,
   ManeuverProposalSchema,
+  ManeuverProposalStatusUpdateSchema,
   HeartbeatSchema
 } from '../src/index';
 
@@ -26,4 +27,5 @@ writeSchema('CommandEnvelope', CommandEnvelopeSchema);
 writeSchema('TelemetryPayload', TelemetryPayloadSchema);
 writeSchema('CommandAck', CommandAckSchema);
 writeSchema('ManeuverProposal', ManeuverProposalSchema);
+writeSchema('ManeuverProposalStatusUpdate', ManeuverProposalStatusUpdateSchema);
 writeSchema('Heartbeat', HeartbeatSchema);

@@ -54,7 +54,8 @@
               "expectedResult"
             ],
             "additionalProperties": false
-          }
+          },
+          "minItems": 1
         },
         "validityWindowMs": {
           "type": "integer",
@@ -62,6 +63,10 @@
         },
         "defaultOnTimeout": {
           "type": "string"
+        },
+        "timestamp": {
+          "type": "integer",
+          "exclusiveMinimum": 0
         }
       },
       "required": [
@@ -71,7 +76,8 @@
         "context",
         "options",
         "validityWindowMs",
-        "defaultOnTimeout"
+        "defaultOnTimeout",
+        "timestamp"
       ],
       "additionalProperties": false
     }

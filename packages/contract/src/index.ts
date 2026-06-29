@@ -58,13 +58,22 @@ export const ZONE_MODE_MATRIX: Record<ZoneType, ZonePermissions> = {
 
 // Mode classification per command action (ICD §4 command catalogue).
 export const MODE2_ACTIONS = ['STEER', 'DRIVE', 'SELECT_DIRECTION', 'CREEP', 'TURN', 'PARK'] as const;
-export const DIAG_ACTIONS = ['RESTART_SERVICE', 'RESTART_COMPUTER', 'RESTART_SENSOR', 'UPDATE_CONFIG', 'PULL_LOGS'] as const;
+export const DIAG_READ_ACTIONS = ['PULL_LOGS'] as const;
+export const DIAG_DISRUPTIVE_ACTIONS = ['RESTART_SERVICE', 'RESTART_COMPUTER', 'RESTART_SENSOR', 'UPDATE_CONFIG'] as const;
+export const DIAG_ACTIONS = [...DIAG_READ_ACTIONS, ...DIAG_DISRUPTIVE_ACTIONS] as const;
 
 /** Derive the operation mode a command action belongs to (E-STOP/SAFE-STOP/signalling default to Mode 1, valid in both). */
 export function inferMode(action: string): OperationMode {
   if ((MODE2_ACTIONS as readonly string[]).includes(action)) return 'MODE2';
   if ((DIAG_ACTIONS as readonly string[]).includes(action)) return 'DIAG';
   return 'MODE1';
+}
+
+/** ICD §1: Disruptive diagnostic actions (restart/config) are deferred on public routes. */
+export function isDiagActionAllowedInZone(action: string, zone: ZoneType): boolean {
+  if (!(DIAG_DISRUPTIVE_ACTIONS as readonly string[]).includes(action)) return true;
+  const p = ZONE_MODE_MATRIX[zone];
+  return p ? p.diagActions : false;
 }
 
 /**
@@ -158,7 +167,7 @@ export const CommandEnvelopeSchema = z.object({
 });
 
 // ------------------------------------------------------------------
-// MANEUVER PROPOSAL (Mode 1)
+// MANEUVER PROPOSAL (Mode 1, ICD §6)
 // ------------------------------------------------------------------
 export const ManeuverOptionSchema = z.object({
   optionId: z.string(),
@@ -174,9 +183,25 @@ export const ManeuverProposalSchema = z.object({
     sceneSummary: z.string(),
     sensorRefs: z.array(z.string())
   }),
-  options: z.array(ManeuverOptionSchema),
+  options: z.array(ManeuverOptionSchema).min(1),
   validityWindowMs: z.number().int().positive(),
-  defaultOnTimeout: z.string()
+  defaultOnTimeout: z.string(),
+  timestamp: z.number().int().positive(),
+});
+
+export const ManeuverProposalStatusSchema = z.enum([
+  'PENDING',
+  'DECIDED',
+  'TIMED_OUT',
+  'CANCELLED',
+]);
+
+export const ManeuverProposalStatusUpdateSchema = z.object({
+  proposalId: z.string().uuid(),
+  vehicleId: z.string(),
+  status: ManeuverProposalStatusSchema,
+  selectedOptionId: z.string().optional(),
+  timestamp: z.number().int().positive(),
 });
 
 // ------------------------------------------------------------------
@@ -241,6 +266,56 @@ export const TelemetryPayloadSchema = z.object({
 });
 
 // ------------------------------------------------------------------
+// PRE-DEPARTURE CHECK (ICD §7, LEG-03)
+// OAD-mandated checklist: brakes, steering, tires, lights, self-diagnosis.
+// ------------------------------------------------------------------
+export const CheckItemStatusSchema = z.enum(['PASS', 'FAIL', 'PENDING', 'NOT_APPLICABLE']);
+export const CheckSourceSchema = z.enum(['SELF_DIAGNOSIS', 'OPERATOR']);
+
+export const CheckItemSchema = z.object({
+  itemId: z.string(),
+  label: z.string(),
+  category: z.enum(['BRAKES', 'STEERING', 'TIRES', 'LIGHTS', 'PERCEPTION', 'PROPULSION', 'CONNECTIVITY', 'OTHER']),
+  safetyCritical: z.boolean(),
+  source: CheckSourceSchema,
+  status: CheckItemStatusSchema,
+  detail: z.string().optional(),
+});
+
+export const PreDepartureCheckSchema = z.object({
+  checklistId: z.string().uuid(),
+  vehicleId: z.string(),
+  items: z.array(CheckItemSchema),
+  status: z.enum(['IN_PROGRESS', 'PASSED', 'FAILED', 'CONFIRMED']),
+  createdAt: z.number().int().positive(),
+  confirmedAt: z.number().int().positive().optional(),
+  confirmedBy: z.string().optional(),
+});
+
+// ------------------------------------------------------------------
+// MISSION (Fleet & Mission service)
+// ------------------------------------------------------------------
+export const MissionStatusSchema = z.enum([
+  'PENDING',
+  'PRE_CHECK',
+  'ACTIVE',
+  'PAUSED',
+  'COMPLETED',
+  'ABORTED',
+]);
+
+export const MissionSchema = z.object({
+  missionId: z.string().uuid(),
+  vehicleId: z.string(),
+  routeId: z.string().optional(),
+  status: MissionStatusSchema,
+  createdAt: z.number().int().positive(),
+  startedAt: z.number().int().positive().optional(),
+  completedAt: z.number().int().positive().optional(),
+  checklistId: z.string().uuid().optional(),
+});
+
+// ------------------------------------------------------------------
 // HEARTBEAT (Vehicle → Cloud, ICD §3/§9)
 // "I'm here, I'm healthy" signal that feeds the cloud-side safe-mode decision.
 // Distinct from the operator deadman (cloud → vehicle).
@@ -289,7 +364,14 @@ export type VehicleState = z.infer<typeof VehicleStateSchema>;
 export type CommandPayload = z.infer<typeof CommandPayloadSchema>;
 export type CommandEnvelope = z.infer<typeof CommandEnvelopeSchema>;
 export type ManeuverProposal = z.infer<typeof ManeuverProposalSchema>;
+export type ManeuverProposalStatus = z.infer<typeof ManeuverProposalStatusSchema>;
+export type ManeuverProposalStatusUpdate = z.infer<typeof ManeuverProposalStatusUpdateSchema>;
 export type TelemetryPayload = z.infer<typeof TelemetryPayloadSchema>;
 export type Heartbeat = z.infer<typeof HeartbeatSchema>;
 export type CommandAck = z.infer<typeof CommandAckSchema>;
 export type RejectReason = z.infer<typeof RejectReasonSchema>;
+export type CheckItem = z.infer<typeof CheckItemSchema>;
+export type CheckItemStatus = z.infer<typeof CheckItemStatusSchema>;
+export type PreDepartureCheck = z.infer<typeof PreDepartureCheckSchema>;
+export type MissionStatus = z.infer<typeof MissionStatusSchema>;
+export type Mission = z.infer<typeof MissionSchema>;
