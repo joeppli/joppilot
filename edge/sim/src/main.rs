@@ -221,6 +221,24 @@ fn mode_allowed_in_zone(zone: &str, mode: &OperationMode) -> bool {
     }
 }
 
+fn is_diag_disruptive(action: &str) -> bool {
+    matches!(action, "RESTART_SERVICE" | "RESTART_COMPUTER" | "RESTART_SENSOR" | "UPDATE_CONFIG")
+}
+
+/// Mirror of contract `isDiagDisruptiveAllowed` (ICD §1 footnote). The edge is the
+/// authoritative gate: a restart/config that creates a perception/control gap is
+/// deferred unless the vehicle sits in a safe state. public_approved_route is
+/// "restricted" (only when stationary); off-public/test zones allow it; out_of_tod
+/// forbids it. Returns true when the action may run now.
+fn diag_disruptive_allowed(action: &str, zone: &str, is_stationary: bool) -> bool {
+    if !is_diag_disruptive(action) { return true; }
+    match zone {
+        "out_of_tod" => false,
+        "public_approved_route" => is_stationary,
+        _ => true, // public_test_permit, depot, private, permitted_test
+    }
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -320,6 +338,9 @@ async fn main() {
     let watchdog_armed = Arc::new(Mutex::new(false));
     // Active maneuver proposal (ICD §6). Only one at a time; edge is authoritative on timeout.
     let active_proposal: Arc<Mutex<Option<ActiveProposal>>> = Arc::new(Mutex::new(None));
+    // Live road speed (km/h), produced by the telemetry loop. The disruptive-diag
+    // gate (ICD §1) reads it to decide if the vehicle is in a safe stationary state.
+    let speed_state = Arc::new(Mutex::new(0.0f32));
 
     // -------------------- Local watchdog / deadman (RES-01/04) --------------------
     {
@@ -351,6 +372,7 @@ async fn main() {
         let location_for_telemetry = location_state.clone();
         let latch_for_telemetry = latched.clone();
         let zone_for_telemetry = configured_zone.clone();
+        let speed_for_telemetry = speed_state.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(100));
             let mut speed = 10.0;
@@ -368,6 +390,7 @@ async fn main() {
                     speed = if speed > 25.0 { 10.0 } else { speed + 1.0 };
                 }
                 if is_latched { speed = 0.0; }
+                *speed_for_telemetry.lock().unwrap() = speed;
 
                 let (lat, lng) = {
                     let mut loc = location_for_telemetry.lock().unwrap();
@@ -685,6 +708,17 @@ async fn main() {
                 // e.g. Mode 2 on a public approved route → the vehicle refuses.
                 println!("⛔ COMMAND REJECTED! Mode {:?} not allowed in zone '{}'. ID: {}", envelope.mode, zone, cid);
                 let ack = ack_json(&cid, "REJECTED", Some("MODE_MISMATCH"));
+                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                continue;
+            }
+
+            // 6b) Disruptive diagnostics deferred unless in a safe state (ICD §1 footnote).
+            // Authoritative state-based check: the edge holds live road speed.
+            let is_stationary = *speed_state.lock().unwrap() < 0.5;
+            if !diag_disruptive_allowed(&action, &zone, is_stationary) {
+                println!("⛔ COMMAND REJECTED! Disruptive diag '{}' deferred (zone '{}', speed-stationary={}). ID: {}", action, zone, is_stationary, cid);
+                let ack = ack_json(&cid, "REJECTED", Some("DIAG_DEFERRED"));
                 seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                 continue;

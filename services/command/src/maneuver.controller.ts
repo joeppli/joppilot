@@ -1,7 +1,6 @@
 import { Controller, Post, Param, Body, Logger, NotFoundException, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { ManeuverService } from './maneuver.service';
 import { SessionService } from './session.service';
-import { ZoneService } from './zone.service';
 import { MqttService } from './mqtt.service';
 import { PrismaService } from './prisma.service';
 import {
@@ -19,7 +18,6 @@ export class ManeuverController {
   constructor(
     private readonly maneuverService: ManeuverService,
     private readonly sessionService: SessionService,
-    private readonly zoneService: ZoneService,
     private readonly mqttService: MqttService,
     private readonly prisma: PrismaService,
   ) {}

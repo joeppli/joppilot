@@ -69,11 +69,34 @@ export function inferMode(action: string): OperationMode {
   return 'MODE1';
 }
 
-/** ICD §1: Disruptive diagnostic actions (restart/config) are deferred on public routes. */
-export function isDiagActionAllowedInZone(action: string, zone: ZoneType): boolean {
-  if (!(DIAG_DISRUPTIVE_ACTIONS as readonly string[]).includes(action)) return true;
+/** Public, canton-approved route is the only zone where disruptive diagnostics are
+ *  "restricted" (ICD §1 table): allowed only while the vehicle sits in a safe state.
+ *  public_test_permit is a controlled test zone → "yes" (unrestricted). */
+export const DIAG_RESTRICTED_ZONES: ZoneType[] = ['public_approved_route'];
+
+export function isDiagDisruptive(action: string): boolean {
+  return (DIAG_DISRUPTIVE_ACTIONS as readonly string[]).includes(action);
+}
+
+/**
+ * ICD §1 footnote: restarting a sensor/computer while the vehicle is actively
+ * operating on a public road creates a momentary perception/control gap, so such
+ * disruptive diagnostic actions are **deferred to a safe state** (IDLE / depot /
+ * maintenance). This is a *state* rule, not a pure zone rule:
+ *   - out_of_tod              → never (matrix diagActions=false)
+ *   - public_approved_route   → only when the vehicle is stationary/idle (restricted)
+ *   - public_test_permit / depot / private / permitted_test → always (off-public or test)
+ *
+ * The authoritative check lives on the edge (it holds live vehicle state); the cloud
+ * 1st gate, lacking live state, calls this with `isStationary=true` so it only blocks
+ * the zone-impossible (out_of_tod) case and defers the state-based call to the edge.
+ */
+export function isDiagDisruptiveAllowed(action: string, zone: ZoneType, isStationary: boolean): boolean {
+  if (!isDiagDisruptive(action)) return true;
   const p = ZONE_MODE_MATRIX[zone];
-  return p ? p.diagActions : false;
+  if (!p || !p.diagActions) return false;                  // out_of_tod
+  if (DIAG_RESTRICTED_ZONES.includes(zone)) return isStationary;
+  return true;
 }
 
 /**
@@ -343,7 +366,8 @@ export const RejectReasonSchema = z.enum([
   'VEHICLE_HEALTH_ERROR',
   'MODE_MISMATCH',
   'DUPLICATE_COMMAND',
-  'SAFE_STOP_LATCHED'
+  'SAFE_STOP_LATCHED',
+  'DIAG_DEFERRED'
 ]);
 
 export const CommandAckSchema = z.object({

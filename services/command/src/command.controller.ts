@@ -10,8 +10,9 @@ import {
   CommandPayload,
   OperationMode,
   ZoneType,
+  ZoneTypeSchema,
   inferMode,
-  isDiagActionAllowedInZone,
+  isDiagDisruptiveAllowed,
 } from '@joppilot/contract';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -89,13 +90,16 @@ export class CommandController {
       });
     }
 
-    // 3b. Disruptive diagnostic actions deferred on public routes (ICD §1 footnote)
+    // 3b. Disruptive diagnostic actions (ICD §1 footnote). The cloud lacks live
+    //     vehicle state, so it only blocks the zone-impossible case (out_of_tod);
+    //     the state-based public-route deferral is enforced authoritatively on the
+    //     edge, which holds live speed/latch state. (isStationary=true here.)
     const zone = this.zoneService.getZone(vehicleId);
-    if (!alwaysAllowed && !isDiagActionAllowedInZone(cmd.action, zone)) {
+    if (!alwaysAllowed && !isDiagDisruptiveAllowed(cmd.action, zone, true)) {
       await this.logEdr(uuidv4(), vehicleId, operatorId, cmd.action, 'REJECTED', { reason: 'DIAG_DEFERRED', zone });
       throw new ForbiddenException({
         reason: 'DIAG_DEFERRED',
-        details: `Disruptive diagnostic action '${cmd.action}' is deferred on zone '${zone}'. Move to depot/idle first.`,
+        details: `Disruptive diagnostic action '${cmd.action}' is not permitted in zone '${zone}'.`,
       });
     }
 
@@ -141,12 +145,44 @@ export class CommandController {
     return { status: 'success', token: result.token, issuedAt: result.issuedAt };
   }
 
-  /** Admin/permit operation: (re)configure a vehicle's zone type (controlled, logged). */
+  /**
+   * Admin/permit operation: (re)configure a vehicle's zone type (ICD §1).
+   * Controlled + logged, not an instant override. Opening Mode 2 on a public
+   * route (→ public_test_permit) requires a cantonal test permit; the
+   * authorization comes from the permit (id + validity window), never from a
+   * role flipping a rule at runtime.
+   */
   @Post(':vehicleId/zone')
-  async setZone(@Param('vehicleId') vehicleId: string, @Body('zone') zone: ZoneType) {
-    this.zoneService.setZone(vehicleId, zone);
-    await this.logEdr(uuidv4(), vehicleId, 'ADMIN', 'ZONE_CHANGE', 'ACK', { zone });
-    return { status: 'success', vehicleId, zone };
+  async setZone(
+    @Param('vehicleId') vehicleId: string,
+    @Body('zone') zone: ZoneType,
+    @Body('issuer') issuer: string = 'ADMIN',
+    @Body('permitId') permitId?: string,
+    @Body('reason') reason?: string,
+    @Body('validUntil') validUntil?: number,
+  ) {
+    // Validate the target zone against the contract.
+    const parsed = ZoneTypeSchema.safeParse(zone);
+    if (!parsed.success) {
+      throw new BadRequestException({ reason: 'INVALID_ZONE', details: `Unknown zone '${zone}'.` });
+    }
+
+    const from = this.zoneService.getZone(vehicleId);
+
+    // ICD §1: Mode 2 on a public route is permit-based only.
+    if (zone === 'public_test_permit' && !permitId) {
+      await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'REJECTED', { reason: 'PERMIT_REQUIRED', from, to: zone });
+      throw new ForbiddenException({
+        reason: 'PERMIT_REQUIRED',
+        details: 'Opening Mode 2 on a public route requires a cantonal test permit (permitId + validUntil).',
+      });
+    }
+
+    const permit = permitId ? { permitId, changedBy: issuer, reason, validUntil } : undefined;
+    this.zoneService.setZone(vehicleId, parsed.data, permit);
+    await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'ACK', { from, to: zone, permitId, reason, validUntil });
+    this.logger.log(`Zone change for ${vehicleId}: ${from} → ${zone} by ${issuer}${permitId ? ` (permit ${permitId})` : ''}`);
+    return { status: 'success', vehicleId, zone, from, permitId };
   }
 
   // ----------------------------------------------------------------

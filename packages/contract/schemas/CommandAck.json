@@ -27,7 +27,8 @@
             "VEHICLE_HEALTH_ERROR",
             "MODE_MISMATCH",
             "DUPLICATE_COMMAND",
-            "SAFE_STOP_LATCHED"
+            "SAFE_STOP_LATCHED",
+            "DIAG_DEFERRED"
           ]
         },
         "details": {
