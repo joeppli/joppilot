@@ -1,0 +1,32 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model PreDepartureCheck {
+  id          String   @id @default(uuid())
+  vehicleId   String
+  status      String   // IN_PROGRESS, PASSED, FAILED, CONFIRMED
+  items       Json     // CheckItem[]
+  confirmedBy String?
+  createdAt   DateTime @default(now())
+  confirmedAt DateTime?
+  mission     Mission?
+}
+
+model Mission {
+  id          String    @id @default(uuid())
+  vehicleId   String
+  routeId     String?
+  status      String    // PENDING, PRE_CHECK, ACTIVE, PAUSED, COMPLETED, ABORTED
+  checklistId String?   @unique
+  checklist   PreDepartureCheck? @relation(fields: [checklistId], references: [id])
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+}
