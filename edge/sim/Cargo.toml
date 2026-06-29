@@ -11,3 +11,4 @@ rumqttc = "0.22.0"
 # Local JSON Schema validation only (no http/cli features) so the safety
 # kernel validates commands against the contract schema (CONTRACT.md).
 jsonschema = { version = "0.17", default-features = false }
+uuid = { version = "1.0", features = ["v4"] }

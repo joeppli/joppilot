@@ -8,6 +8,7 @@ use std::env;
 use std::fs;
 use jsonschema::JSONSchema;
 use serde_json::Value;
+use uuid::Uuid;
 
 // ------------------------------------------------------------------
 // Wire types (mirror @joppilot/contract)
@@ -53,6 +54,62 @@ struct Heartbeat {
     #[serde(rename = "currentZone")]
     current_zone: String,
     latched: bool,
+}
+
+// ------------------------------------------------------------------
+// Maneuver Proposal (ICD §6) — edge generates, cloud presents to operator
+// ------------------------------------------------------------------
+#[derive(Serialize, Debug, Clone)]
+struct ManeuverOption {
+    #[serde(rename = "optionId")]
+    option_id: String,
+    description: String,
+    #[serde(rename = "expectedResult")]
+    expected_result: String,
+}
+
+#[derive(Serialize, Debug)]
+struct ManeuverProposal {
+    #[serde(rename = "proposalId")]
+    proposal_id: String,
+    #[serde(rename = "vehicleId")]
+    vehicle_id: String,
+    #[serde(rename = "reasonCode")]
+    reason_code: String,
+    context: ManeuverContext,
+    options: Vec<ManeuverOption>,
+    #[serde(rename = "validityWindowMs")]
+    validity_window_ms: u64,
+    #[serde(rename = "defaultOnTimeout")]
+    default_on_timeout: String,
+    timestamp: u64,
+}
+
+#[derive(Serialize, Debug)]
+struct ManeuverContext {
+    #[serde(rename = "sceneSummary")]
+    scene_summary: String,
+    #[serde(rename = "sensorRefs")]
+    sensor_refs: Vec<String>,
+}
+
+#[derive(Serialize, Debug)]
+struct ManeuverStatusUpdate {
+    #[serde(rename = "proposalId")]
+    proposal_id: String,
+    #[serde(rename = "vehicleId")]
+    vehicle_id: String,
+    status: String,
+    #[serde(rename = "selectedOptionId", skip_serializing_if = "Option::is_none")]
+    selected_option_id: Option<String>,
+    timestamp: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveProposal {
+    proposal_id: String,
+    default_on_timeout: String,
+    deadline_ms: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -239,6 +296,8 @@ async fn main() {
     let telemetry_topic = format!("joppilot/v1/vehicles/{}/telemetry", vehicle_id);
     let heartbeat_up_topic = format!("joppilot/v1/vehicles/{}/heartbeat", vehicle_id); // vehicle → cloud
     let deadman_topic = format!("joppilot/v1/vehicles/{}/deadman", vehicle_id);         // cloud → vehicle ping
+    let proposal_topic = format!("joppilot/v1/vehicles/{}/maneuver/proposal", vehicle_id); // edge → cloud
+    let maneuver_status_topic = format!("joppilot/v1/vehicles/{}/maneuver/status", vehicle_id); // edge → cloud
 
     client.subscribe(&estop_topic, QoS::AtLeastOnce).await.unwrap();
     client.subscribe(&command_topic, QoS::AtLeastOnce).await.unwrap();
@@ -259,6 +318,8 @@ async fn main() {
     // The watchdog only arms after the FIRST cloud contact: a vehicle that has
     // never connected is not in "connection lost" (ICD §9 is about loss).
     let watchdog_armed = Arc::new(Mutex::new(false));
+    // Active maneuver proposal (ICD §6). Only one at a time; edge is authoritative on timeout.
+    let active_proposal: Arc<Mutex<Option<ActiveProposal>>> = Arc::new(Mutex::new(None));
 
     // -------------------- Local watchdog / deadman (RES-01/04) --------------------
     {
@@ -367,6 +428,127 @@ async fn main() {
                 };
                 let json = serde_json::to_string(&hb).unwrap();
                 client_clone.publish(&hb_topic, QoS::AtLeastOnce, false, json).await.unwrap();
+            }
+        });
+    }
+
+    // -------------------- Maneuver proposal generator + timeout (ICD §6, sim) ----------
+    {
+        let client_clone = client.clone();
+        let proposal_topic_clone = proposal_topic.clone();
+        let status_topic_clone = maneuver_status_topic.clone();
+        let active_prop = active_proposal.clone();
+        let latch_for_prop = latched.clone();
+        let location_for_prop = location_state.clone();
+
+        tokio::spawn(async move {
+            // Wait 10s before first proposal so the system stabilizes
+            time::sleep(Duration::from_secs(10)).await;
+            let mut interval = time::interval(Duration::from_secs(2));
+
+            let scenarios = [
+                ("OBSTACLE", "Stationary obstacle detected on planned path", "CAM_FRONT"),
+                ("PEDESTRIAN_CONFLICT", "Pedestrian group near collection point", "LIDAR_FRONT"),
+                ("ROAD_BLOCKED", "Parked vehicle blocking the route", "CAM_FRONT"),
+            ];
+            let mut scenario_idx = 0;
+
+            loop {
+                interval.tick().await;
+
+                let is_latched = *latch_for_prop.lock().unwrap();
+                if is_latched { continue; }
+
+                // Check timeout on active proposal
+                let timeout_info = {
+                    let mut p = active_prop.lock().unwrap();
+                    if let Some(ref ap) = *p {
+                        if now_ms() >= ap.deadline_ms {
+                            let info = (ap.proposal_id.clone(), ap.default_on_timeout.clone());
+                            *p = None;
+                            Some(info)
+                        } else {
+                            // proposal still active, wait
+                            continue;
+                        }
+                    } else {
+                        None
+                    }
+                }; // MutexGuard dropped here
+
+                if let Some((timed_out_id, default_opt)) = timeout_info {
+                    println!("⏰ MANEUVER PROPOSAL TIMED OUT → applying safe default '{}'. ID: {}", default_opt, timed_out_id);
+                    let status = ManeuverStatusUpdate {
+                        proposal_id: timed_out_id,
+                        vehicle_id: "VEH-001".to_string(),
+                        status: "TIMED_OUT".to_string(),
+                        selected_option_id: Some(default_opt),
+                        timestamp: now_ms(),
+                    };
+                    let json = serde_json::to_string(&status).unwrap();
+                    let _ = client_clone.publish(&status_topic_clone, QoS::AtLeastOnce, false, json).await;
+                    continue;
+                }
+
+                // Generate a new proposal every ~20s (simulated ADS escalation)
+                // The interval is 2s but we only generate when there's no active proposal,
+                // so effective cadence is ~validityWindowMs + 2s between proposals
+                let (reason, summary, sensor) = scenarios[scenario_idx % scenarios.len()];
+                scenario_idx += 1;
+
+                let (lat, lng) = *location_for_prop.lock().unwrap();
+                let proposal_id = Uuid::new_v4().to_string();
+                let validity_ms: u64 = 30_000;
+
+                let opt_a_id = format!("opt-{}-a", &proposal_id[..8]);
+                let opt_b_id = format!("opt-{}-b", &proposal_id[..8]);
+
+                let proposal = ManeuverProposal {
+                    proposal_id: proposal_id.clone(),
+                    vehicle_id: "VEH-001".to_string(),
+                    reason_code: reason.to_string(),
+                    context: ManeuverContext {
+                        scene_summary: format!("{} at ({:.4}, {:.4})", summary, lat, lng),
+                        sensor_refs: vec![sensor.to_string()],
+                    },
+                    options: vec![
+                        ManeuverOption {
+                            option_id: opt_a_id.clone(),
+                            description: "Reroute around obstacle".to_string(),
+                            expected_result: "Continue mission with +2min delay".to_string(),
+                        },
+                        ManeuverOption {
+                            option_id: opt_b_id.clone(),
+                            description: "Wait and retry after 60s".to_string(),
+                            expected_result: "Pause at current position, retry approach".to_string(),
+                        },
+                    ],
+                    validity_window_ms: validity_ms,
+                    default_on_timeout: opt_b_id.clone(),
+                    timestamp: now_ms(),
+                };
+
+                let deadline = now_ms() + validity_ms;
+                let active = ActiveProposal {
+                    proposal_id: proposal_id.clone(),
+                    default_on_timeout: opt_b_id,
+                    deadline_ms: deadline,
+                };
+                *active_prop.lock().unwrap() = Some(active);
+
+                let json = serde_json::to_string(&proposal).unwrap();
+                let _ = client_clone.publish(&proposal_topic_clone, QoS::AtLeastOnce, false, json).await;
+                println!("📋 MANEUVER PROPOSAL published: {} (reason: {}, window: {}s)", proposal_id, reason, validity_ms / 1000);
+
+                let status = ManeuverStatusUpdate {
+                    proposal_id: proposal_id.clone(),
+                    vehicle_id: "VEH-001".to_string(),
+                    status: "PENDING".to_string(),
+                    selected_option_id: None,
+                    timestamp: now_ms(),
+                };
+                let status_json = serde_json::to_string(&status).unwrap();
+                let _ = client_clone.publish(&status_topic_clone, QoS::AtLeastOnce, false, status_json).await;
             }
         });
     }
@@ -508,7 +690,58 @@ async fn main() {
                 continue;
             }
 
-            // 7) Accepted ------------------------------------------------
+            // 7) Maneuver decision handling (ICD §6) ----------------------
+            let is_maneuver_decision = action == "CONFIRM_MANEUVER"
+                || action == "REJECT_MANEUVER"
+                || action == "SELECT_ALTERNATIVE";
+
+            if is_maneuver_decision {
+                let decision_proposal_id = envelope.payload.get("proposalId")
+                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let selected_option = envelope.payload.get("optionId")
+                    .and_then(|v| v.as_str()).map(|s| s.to_string());
+
+                let mut prop = active_proposal.lock().unwrap();
+                let matched = prop.as_ref().map(|ap| ap.proposal_id == decision_proposal_id).unwrap_or(false);
+
+                if !matched {
+                    drop(prop);
+                    println!("⛔ MANEUVER DECISION for unknown/expired proposal '{}'. ID: {}", decision_proposal_id, cid);
+                    let ack = ack_json(&cid, "REJECTED", Some("SCHEMA_INVALID"));
+                    seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                    client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                    continue;
+                }
+
+                *prop = None;
+                drop(prop);
+
+                let resolved_option = match action.as_str() {
+                    "CONFIRM_MANEUVER" => selected_option.unwrap_or_else(|| decision_proposal_id.clone()),
+                    "SELECT_ALTERNATIVE" => selected_option.unwrap_or_default(),
+                    _ => String::new(), // REJECT_MANEUVER
+                };
+
+                println!("✅ MANEUVER {} applied (option: '{}') for proposal {}. ID: {}",
+                    action, resolved_option, decision_proposal_id, cid);
+
+                let ack = ack_json(&cid, "ACK", None);
+                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+
+                let status = ManeuverStatusUpdate {
+                    proposal_id: decision_proposal_id,
+                    vehicle_id: vehicle_id.to_string(),
+                    status: "DECIDED".to_string(),
+                    selected_option_id: if resolved_option.is_empty() { None } else { Some(resolved_option) },
+                    timestamp: now_ms(),
+                };
+                let status_json = serde_json::to_string(&status).unwrap();
+                client.publish(&maneuver_status_topic, QoS::AtLeastOnce, false, status_json).await.unwrap();
+                continue;
+            }
+
+            // 8) Accepted ------------------------------------------------
             println!("✅ COMMAND ACCEPTED '{}' mode={:?} zone='{}' ({:.4},{:.4}). ID: {}", action, envelope.mode, zone, lat, lng, cid);
             let ack = ack_json(&cid, "ACK", None);
             seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
