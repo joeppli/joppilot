@@ -1,0 +1,89 @@
+/* ──────────────────────────────────────────────────────────────
+   Joppilot console — design tokens (single source of truth)
+   Light operations theme · dark sidebar · Nunito (rounded)
+   ────────────────────────────────────────────────────────────── */
+:root {
+  /* Brand / accent */
+  --color-primary:        #2563eb;
+  --color-primary-hover:  #1d4ed8;
+  --color-primary-soft:   #eff6ff;
+
+  /* Semantic status */
+  --color-success:        #16a34a;
+  --color-success-soft:   #dcfce7;
+  --color-warning:        #ea580c;
+  --color-warning-soft:   #ffedd5;
+  --color-danger:         #dc2626;
+  --color-danger-soft:    #fef2f2;
+  --color-info:           #0891b2;
+  --color-info-soft:      #ecfeff;
+  --color-neutral:        #475569;
+  --color-neutral-soft:   #f1f5f9;
+
+  /* Surfaces */
+  --bg-app:        #f4f6f9;
+  --bg-surface:    #ffffff;
+  --bg-subtle:     #f8fafc;
+  --bg-inset:      #f1f5f9;
+
+  /* Sidebar (dark) */
+  --sidebar-bg:        #0f1629;
+  --sidebar-fg:        #94a3b8;
+  --sidebar-fg-hover:  #e2e8f0;
+  --sidebar-active-bg: #2563eb;
+  --sidebar-active-fg: #ffffff;
+  --sidebar-border:    rgba(255, 255, 255, 0.06);
+
+  /* Text */
+  --text-primary:   #0f172a;
+  --text-secondary: #64748b;
+  --text-muted:     #94a3b8;
+  --text-inverse:   #ffffff;
+
+  /* Borders / lines */
+  --border:        #e2e8f0;
+  --border-strong: #cbd5e1;
+
+  /* Typography */
+  --font-sans: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --fs-xs:   11px;
+  --fs-sm:   13px;
+  --fs-base: 14px;
+  --fs-md:   16px;
+  --fs-lg:   20px;
+  --fs-xl:   26px;
+  --fs-2xl:  32px;
+  --fw-normal:   400;
+  --fw-medium:   600;
+  --fw-bold:     700;
+  --fw-extra:    800;
+
+  /* Spacing scale (4px base) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius:    8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow:    0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.10);
+  --shadow-lg: 0 10px 28px rgba(15, 23, 42, 0.14);
+
+  /* Layout */
+  --sidebar-w: 232px;
+  --header-h:  60px;
+  --z-overlay: 1000;
+  --z-header:  100;
+}

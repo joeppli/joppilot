@@ -91,7 +91,21 @@ export default function VehicleMap({ lat, lng, vehicleState }: Props) {
     mapRef.current = map;
     markerRef.current = marker;
 
-    return () => { map.remove(); mapRef.current = null; markerRef.current = null; };
+    // Robustness: if the flex/router layout sizes the container a tick after mount,
+    // MapLibre may init at 0×0. Force a resize on the next frames + on window resize.
+    const raf = requestAnimationFrame(() => map.resize());
+    const t = setTimeout(() => map.resize(), 200);
+    const onResize = () => map.resize();
+    window.addEventListener('resize', onResize);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(t);
+      window.removeEventListener('resize', onResize);
+      map.remove();
+      mapRef.current = null;
+      markerRef.current = null;
+    };
   }, []);
 
   useEffect(() => {
