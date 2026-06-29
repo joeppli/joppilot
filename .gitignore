@@ -20,6 +20,14 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# ── Prisma generated client ──────────────────────────────────
+# Each service generates its own Prisma client into generated/prisma/.
+# Recreated by `npx prisma generate` — never committed.
+**/generated/prisma/
+
+# ── npm lockfile (we use pnpm) ───────────────────────────────
+package-lock.json
+
 # ── Build / cache output ─────────────────────────────────────
 # NOTE: packages/contract/schemas/*.json are generated from Zod but
 # intentionally committed — the Rust edge reads them at runtime and

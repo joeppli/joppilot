@@ -20,7 +20,7 @@
     "mqtt": "^5.3.5",
     "uuid": "^9.0.1",
     "pg": "^8.11.3",
-    "@joppilot/contract": "*"
+    "@joppilot/contract": "workspace:*"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.0.0",
