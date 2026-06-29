@@ -1,0 +1,30 @@
+# Normalize all text to LF in the repo (Windows editors/GitKraken may save CRLF).
+# `git add` stores LF; checkout is LF on every platform → no more EOL churn.
+* text=auto eol=lf
+
+# Explicit text types (belt-and-suspenders)
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.js    text eol=lf
+*.cjs   text eol=lf
+*.json  text eol=lf
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.lock  text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.md    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.prisma text eol=lf
+*.env.example text eol=lf
+
+# Binary assets — never touch
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
