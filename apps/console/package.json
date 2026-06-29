@@ -11,10 +11,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@joppilot/contract": "workspace:*",
+    "maplibre-gl": "^5.24.0",
+    "mqtt": "^5.3.5",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "mqtt": "^5.3.5",
-    "@joppilot/contract": "*",
     "socket.io-client": "^4.7.2"
   },
   "devDependencies": {
