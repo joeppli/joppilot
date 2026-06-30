@@ -1,0 +1,2 @@
+# Reusable Terraform modules live here (network, ecr, ecs, iot, ...).
+# Added from M2-2 onward. This file just keeps the empty directory in git.

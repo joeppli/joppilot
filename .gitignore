@@ -75,3 +75,20 @@ certs/
 *.swo
 .DS_Store
 Thumbs.db
+
+# ── Terraform (infra/terraform) ───────────────────────────────
+# Local provider plugins, state caches, plan outputs, and any *.auto.tfvars with
+# account-specific or secret values. Committed: *.tf, terraform.tfvars, .terraform.lock.hcl.
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.auto.tfvars
+.terraformrc
+terraform.rc

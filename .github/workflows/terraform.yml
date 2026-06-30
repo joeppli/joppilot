@@ -1,0 +1,86 @@
+name: terraform
+
+# What this does:
+#   - On a pull request that touches infra/terraform: check formatting, init,
+#     validate, and run `terraform plan` (read-only — shows what WOULD change).
+#   - On push to main that touches infra/terraform: run `terraform apply` (makes
+#     the changes real).
+#   - Manual run available via the "Run workflow" button.
+#
+# Auth: NO stored AWS keys. We use GitHub OIDC — the job presents a short-lived
+# token and assumes the IAM role created by bootstrap.sh. The role ARN comes from
+# the repo variable AWS_CI_ROLE_ARN (Settings -> Secrets and variables -> Actions
+# -> Variables). If that variable is missing the AWS step is skipped with a notice.
+
+on:
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # required to request the OIDC token
+  contents: read
+  pull-requests: write   # to post the plan summary as a PR comment
+
+concurrency:
+  group: terraform-dev
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-central-1
+  TF_WORKDIR: infra/terraform/envs/dev
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKDIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard — require AWS_CI_ROLE_ARN
+        if: ${{ vars.AWS_CI_ROLE_ARN == '' }}
+        run: |
+          echo "::warning::AWS_CI_ROLE_ARN repo variable is not set yet — run bootstrap.sh and add it (Settings -> Secrets and variables -> Actions -> Variables). Skipping AWS steps."
+          exit 0
+
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ vars.AWS_CI_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        if: ${{ vars.AWS_CI_ROLE_ARN != '' }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform fmt (check)
+        if: ${{ vars.AWS_CI_ROLE_ARN != '' }}
+        run: terraform fmt -check -recursive ../..
+
+      - name: Terraform init
+        if: ${{ vars.AWS_CI_ROLE_ARN != '' }}
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        if: ${{ vars.AWS_CI_ROLE_ARN != '' }}
+        run: terraform validate
+
+      - name: Terraform plan
+        if: ${{ vars.AWS_CI_ROLE_ARN != '' && github.event_name == 'pull_request' }}
+        run: terraform plan -input=false -no-color
+
+      - name: Terraform apply
+        if: ${{ vars.AWS_CI_ROLE_ARN != '' && github.event_name != 'pull_request' }}
+        run: terraform apply -input=false -auto-approve
