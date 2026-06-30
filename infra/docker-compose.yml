@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: joppilot_mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: joppilot_postgres
+    environment:
+      POSTGRES_USER: joppilot
+      POSTGRES_PASSWORD: joppilot_secret
+      POSTGRES_DB: joppilot_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  valkey:
+    image: valkey/valkey:latest
+    container_name: joppilot_valkey
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

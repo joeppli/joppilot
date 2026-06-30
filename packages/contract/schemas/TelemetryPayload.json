@@ -1,0 +1,260 @@
+{
+  "$ref": "#/definitions/TelemetryPayload",
+  "definitions": {
+    "TelemetryPayload": {
+      "type": "object",
+      "properties": {
+        "vehicleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timestamp": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": {
+              "type": "number",
+              "minimum": -90,
+              "maximum": 90
+            },
+            "lng": {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            }
+          },
+          "required": [
+            "lat",
+            "lng"
+          ],
+          "additionalProperties": false
+        },
+        "speedKmh": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "vehicleState": {
+          "type": "string",
+          "enum": [
+            "IDLE",
+            "SUPERVISED_ASSIST",
+            "REMOTE_DRIVE",
+            "SAFE_STOPPED",
+            "MISSION_PAUSED"
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "MODE1",
+            "MODE2",
+            "DIAG"
+          ]
+        },
+        "battery": {
+          "type": "object",
+          "properties": {
+            "voltageV": {
+              "type": "number"
+            },
+            "currentA": {
+              "type": "number"
+            },
+            "temperatureC": {
+              "type": "number"
+            },
+            "percent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            }
+          },
+          "required": [
+            "voltageV",
+            "currentA",
+            "temperatureC",
+            "percent"
+          ],
+          "additionalProperties": false
+        },
+        "motor": {
+          "type": "object",
+          "properties": {
+            "rpm": {
+              "type": "number"
+            },
+            "temperatureC": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "rpm",
+            "temperatureC"
+          ],
+          "additionalProperties": false
+        },
+        "sensors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "CAMERA",
+                  "LIDAR",
+                  "ULTRASONIC",
+                  "RADAR"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "OK",
+                  "DEGRADED",
+                  "FAULT"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "status"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "computeHealth": {
+          "type": "object",
+          "properties": {
+            "cpuPercent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "ramPercent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "temperatureC": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "cpuPercent",
+            "ramPercent",
+            "temperatureC"
+          ],
+          "additionalProperties": false
+        },
+        "connection": {
+          "type": "object",
+          "properties": {
+            "rttMs": {
+              "type": "number"
+            },
+            "packetLossPercent": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "carrier": {
+              "type": "string"
+            },
+            "band": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "rttMs",
+            "packetLossPercent",
+            "carrier",
+            "band"
+          ],
+          "additionalProperties": false
+        },
+        "stateVector": {
+          "type": "object",
+          "properties": {
+            "accelerationX": {
+              "type": "number"
+            },
+            "accelerationY": {
+              "type": "number"
+            },
+            "accelerationZ": {
+              "type": "number"
+            },
+            "yawRate": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "accelerationX",
+            "accelerationY",
+            "accelerationZ",
+            "yawRate"
+          ],
+          "additionalProperties": false
+        },
+        "activeFencingToken": {
+          "type": "object",
+          "properties": {
+            "tokenId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuedAt": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            }
+          },
+          "required": [
+            "tokenId",
+            "issuedAt"
+          ],
+          "additionalProperties": false
+        },
+        "currentZone": {
+          "type": "string",
+          "enum": [
+            "public_approved_route",
+            "public_test_permit",
+            "depot",
+            "private",
+            "permitted_test",
+            "out_of_tod"
+          ]
+        },
+        "dtc": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "vehicleId",
+        "timestamp",
+        "location",
+        "speedKmh",
+        "vehicleState",
+        "mode",
+        "battery",
+        "sensors",
+        "computeHealth",
+        "connection"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

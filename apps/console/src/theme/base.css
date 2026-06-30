@@ -1,0 +1,41 @@
+/* Reset + base element styles + small utility set */
+*, *::before, *::after { box-sizing: border-box; }
+* { margin: 0; }
+
+html, body, #root { height: 100%; }
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  color: var(--text-primary);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4 { font-weight: var(--fw-bold); line-height: 1.2; }
+a { color: var(--color-primary); text-decoration: none; }
+button { font-family: inherit; }
+
+/* Focus ring — accessibility (ACC-04) */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Utility helpers (sparingly) */
+.row     { display: flex; align-items: center; }
+.col     { display: flex; flex-direction: column; }
+.gap-1   { gap: var(--sp-1); }
+.gap-2   { gap: var(--sp-2); }
+.gap-3   { gap: var(--sp-3); }
+.gap-4   { gap: var(--sp-4); }
+.between { justify-content: space-between; }
+.wrap    { flex-wrap: wrap; }
+.grow    { flex: 1; }
+.muted   { color: var(--text-secondary); }
+.text-xs { font-size: var(--fs-xs); }
+.text-sm { font-size: var(--fs-sm); }
+.tabular { font-variant-numeric: tabular-nums; }
+.mono-id { font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }

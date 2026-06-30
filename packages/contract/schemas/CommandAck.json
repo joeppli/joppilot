@@ -1,0 +1,46 @@
+{
+  "$ref": "#/definitions/CommandAck",
+  "definitions": {
+    "CommandAck": {
+      "type": "object",
+      "properties": {
+        "commandId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ACK",
+            "REJECTED",
+            "ERROR"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "UNAUTHORIZED",
+            "INVALID_TOKEN",
+            "GEOFENCE_VIOLATION",
+            "SCHEMA_INVALID",
+            "TTL_EXPIRED",
+            "VEHICLE_HEALTH_ERROR",
+            "MODE_MISMATCH",
+            "DUPLICATE_COMMAND",
+            "SAFE_STOP_LATCHED",
+            "DIAG_DEFERRED"
+          ]
+        },
+        "details": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "commandId",
+        "status"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

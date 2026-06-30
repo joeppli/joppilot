@@ -1,0 +1,617 @@
+{
+  "$ref": "#/definitions/CommandEnvelope",
+  "definitions": {
+    "CommandEnvelope": {
+      "type": "object",
+      "properties": {
+        "commandId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "correlationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "vehicleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "issuer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "MODE1",
+            "MODE2",
+            "DIAG"
+          ]
+        },
+        "token": {
+          "type": "object",
+          "properties": {
+            "tokenId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuedAt": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            }
+          },
+          "required": [
+            "tokenId",
+            "issuedAt"
+          ],
+          "additionalProperties": false
+        },
+        "timestamp": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "ttlMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "payload": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "SAFE_STOP"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "E_STOP"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "CLEAR_SAFE_STOP"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "CONFIRM_MANEUVER"
+                },
+                "proposalId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "proposalId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "REJECT_MANEUVER"
+                },
+                "proposalId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "proposalId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "SELECT_ALTERNATIVE"
+                },
+                "proposalId": {
+                  "type": "string"
+                },
+                "optionId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "proposalId",
+                "optionId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "START_MISSION"
+                },
+                "routeId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "PAUSE_MISSION"
+                }
+              },
+              "required": [
+                "action"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "ABORT_MISSION"
+                }
+              },
+              "required": [
+                "action"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "ACTIVATE_ADS"
+                }
+              },
+              "required": [
+                "action"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "DEACTIVATE_ADS"
+                }
+              },
+              "required": [
+                "action"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "RESUME_AUTONOMY"
+                }
+              },
+              "required": [
+                "action"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "CONFIRM_PRE_DEPARTURE_CHECK"
+                },
+                "checklistId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "checklistId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "INTERCOM"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "OPEN",
+                    "CLOSE"
+                  ]
+                }
+              },
+              "required": [
+                "action",
+                "state"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "PERSON_SAFETY"
+                },
+                "actionType": {
+                  "type": "string",
+                  "enum": [
+                    "WARN_AWAY",
+                    "LOCK_COMPARTMENT"
+                  ]
+                }
+              },
+              "required": [
+                "action",
+                "actionType"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "MARK_COMPLETED"
+                },
+                "stopId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "stopId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "STEER"
+                },
+                "angle": {
+                  "type": "number",
+                  "minimum": -45,
+                  "maximum": 45
+                }
+              },
+              "required": [
+                "action",
+                "angle"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "DRIVE"
+                },
+                "throttle": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "brake": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              },
+              "required": [
+                "action",
+                "throttle",
+                "brake"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "SELECT_DIRECTION"
+                },
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "FORWARD",
+                    "REVERSE",
+                    "NEUTRAL"
+                  ]
+                }
+              },
+              "required": [
+                "action",
+                "direction"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "CREEP"
+                },
+                "speedKmh": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 5
+                }
+              },
+              "required": [
+                "action",
+                "speedKmh"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "TURN"
+                },
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "LEFT",
+                    "RIGHT",
+                    "STRAIGHT"
+                  ]
+                }
+              },
+              "required": [
+                "action",
+                "direction"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "PARK"
+                },
+                "engage": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "action",
+                "engage"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "LIGHTS"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "OFF",
+                    "LOW",
+                    "HIGH",
+                    "HAZARD",
+                    "BLINK_LEFT",
+                    "BLINK_RIGHT"
+                  ]
+                }
+              },
+              "required": [
+                "action",
+                "state"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "HORN"
+                },
+                "durationMs": {
+                  "type": "number",
+                  "maximum": 5000
+                }
+              },
+              "required": [
+                "action",
+                "durationMs"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "SPEAKER"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "message"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "RESTART_SERVICE"
+                },
+                "serviceName": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "serviceName"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "RESTART_COMPUTER"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "target"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "RESTART_SENSOR"
+                },
+                "sensorId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "sensorId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "UPDATE_CONFIG"
+                },
+                "configKey": {
+                  "type": "string"
+                },
+                "configValue": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "action",
+                "configKey",
+                "configValue"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "const": "PULL_LOGS"
+                },
+                "timeRangeMs": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "action",
+                "timeRangeMs"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "signature": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "commandId",
+        "sessionId",
+        "vehicleId",
+        "issuer",
+        "mode",
+        "token",
+        "timestamp",
+        "ttlMs",
+        "payload"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

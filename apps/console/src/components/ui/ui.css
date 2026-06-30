@@ -1,0 +1,73 @@
+/* ── Button ─────────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
+  padding: 8px 16px; border: 1px solid transparent; border-radius: var(--radius);
+  font-size: var(--fs-sm); font-weight: var(--fw-bold); cursor: pointer;
+  transition: background .15s, border-color .15s, opacity .15s; white-space: nowrap;
+}
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn-primary { background: var(--color-primary); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--color-primary-hover); }
+.btn-success { background: var(--color-success); color: #fff; }
+.btn-danger  { background: var(--color-danger);  color: #fff; }
+.btn-warning { background: var(--color-warning); color: #fff; }
+.btn-ghost   { background: transparent; color: var(--text-secondary); border-color: var(--border); }
+.btn-ghost:hover:not(:disabled) { background: var(--bg-inset); color: var(--text-primary); }
+.btn-sm { padding: 5px 10px; font-size: var(--fs-xs); }
+.btn-lg { padding: 12px 22px; font-size: var(--fs-md); }
+.btn-block { width: 100%; }
+
+/* ── Badge ──────────────────────────────────────────────── */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: var(--radius-full);
+  font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  text-transform: uppercase; letter-spacing: .03em; line-height: 1.4;
+}
+.badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .9; }
+.badge-plain::before { display: none; }
+.badge-success { background: var(--color-success-soft); color: #15803d; }
+.badge-danger  { background: var(--color-danger-soft);  color: #b91c1c; }
+.badge-warning { background: var(--color-warning-soft);  color: #c2410c; }
+.badge-info    { background: var(--color-info-soft);     color: #0e7490; }
+.badge-neutral { background: var(--color-neutral-soft);  color: var(--color-neutral); }
+
+/* ── Card ───────────────────────────────────────────────── */
+.card {
+  background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+}
+.card-pad { padding: var(--sp-5); }
+.card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--border);
+}
+.card-title { font-size: var(--fs-base); font-weight: var(--fw-bold); }
+.card-link  { font-size: var(--fs-sm); color: var(--color-primary); font-weight: var(--fw-bold); cursor: pointer; }
+
+/* ── Stat card ──────────────────────────────────────────── */
+.stat { display: flex; flex-direction: column; gap: 2px; }
+.stat-value { font-size: var(--fs-2xl); font-weight: var(--fw-extra); line-height: 1; }
+.stat-label { font-size: var(--fs-xs); color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; font-weight: var(--fw-bold); }
+
+/* ── Progress ───────────────────────────────────────────── */
+.progress { height: 7px; background: var(--bg-inset); border-radius: var(--radius-full); overflow: hidden; }
+.progress-fill { height: 100%; border-radius: var(--radius-full); transition: width .3s ease; }
+
+/* ── Table ──────────────────────────────────────────────── */
+.table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.table thead th {
+  text-align: left; padding: 10px 16px; font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  text-transform: uppercase; letter-spacing: .04em; color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.table tbody td { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.table tbody tr:last-child td { border-bottom: none; }
+.table tbody tr:hover { background: var(--bg-subtle); }
+
+/* ── Section grid ───────────────────────────────────────── */
+.grid { display: grid; gap: var(--sp-5); }
+.grid-auto { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.grid-2 { grid-template-columns: repeat(2, 1fr); }
+.grid-3 { grid-template-columns: repeat(3, 1fr); }
+@media (max-width: 900px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }

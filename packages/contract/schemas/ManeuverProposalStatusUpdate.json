@@ -1,0 +1,41 @@
+{
+  "$ref": "#/definitions/ManeuverProposalStatusUpdate",
+  "definitions": {
+    "ManeuverProposalStatusUpdate": {
+      "type": "object",
+      "properties": {
+        "proposalId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "vehicleId": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PENDING",
+            "DECIDED",
+            "TIMED_OUT",
+            "CANCELLED"
+          ]
+        },
+        "selectedOptionId": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "proposalId",
+        "vehicleId",
+        "status",
+        "timestamp"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -1,0 +1,101 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from './prisma.service';
+import { MissionStatus } from '@joppilot/contract';
+
+@Injectable()
+export class MissionService {
+  private readonly logger = new Logger(MissionService.name);
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  async create(vehicleId: string, routeId?: string) {
+    const activeMission = await this.prisma.mission.findFirst({
+      where: { vehicleId, status: { in: ['PENDING', 'PRE_CHECK', 'ACTIVE', 'PAUSED'] } },
+    });
+    if (activeMission) {
+      throw new Error(`Vehicle ${vehicleId} already has an active mission: ${activeMission.id}`);
+    }
+
+    const mission = await this.prisma.mission.create({
+      data: { vehicleId, routeId, status: 'PENDING' },
+    });
+
+    this.logger.log(`Mission created: ${mission.id} for ${vehicleId}`);
+    return mission;
+  }
+
+  async linkChecklist(missionId: string, checklistId: string) {
+    await this.prisma.mission.update({
+      where: { id: missionId },
+      data: { checklistId, status: 'PRE_CHECK' },
+    });
+    this.logger.log(`Mission ${missionId} → PRE_CHECK (checklist: ${checklistId})`);
+  }
+
+  async start(missionId: string) {
+    const mission = await this.prisma.mission.findUnique({
+      where: { id: missionId },
+      include: { checklist: true },
+    });
+    if (!mission) throw new Error('Mission not found');
+
+    const validFrom: MissionStatus[] = ['PENDING', 'PRE_CHECK'];
+    if (!validFrom.includes(mission.status as MissionStatus)) {
+      throw new Error(`Cannot start mission in status ${mission.status}`);
+    }
+
+    if (mission.checklist && mission.checklist.status !== 'CONFIRMED') {
+      throw new Error('Cannot start: pre-departure check not confirmed');
+    }
+
+    await this.prisma.mission.update({
+      where: { id: missionId },
+      data: { status: 'ACTIVE', startedAt: new Date() },
+    });
+    this.logger.log(`Mission ${missionId} STARTED`);
+    return { missionId, status: 'ACTIVE' as MissionStatus };
+  }
+
+  async pause(missionId: string) {
+    return this.transition(missionId, 'PAUSED', ['ACTIVE']);
+  }
+
+  async resume(missionId: string) {
+    return this.transition(missionId, 'ACTIVE', ['PAUSED']);
+  }
+
+  async abort(missionId: string) {
+    return this.transition(missionId, 'ABORTED', ['PENDING', 'PRE_CHECK', 'ACTIVE', 'PAUSED']);
+  }
+
+  async complete(missionId: string) {
+    return this.transition(missionId, 'COMPLETED', ['ACTIVE']);
+  }
+
+  async getActive(vehicleId: string) {
+    return this.prisma.mission.findFirst({
+      where: { vehicleId, status: { in: ['PENDING', 'PRE_CHECK', 'ACTIVE', 'PAUSED'] } },
+      include: { checklist: true },
+    });
+  }
+
+  async get(missionId: string) {
+    return this.prisma.mission.findUnique({ where: { id: missionId }, include: { checklist: true } });
+  }
+
+  private async transition(missionId: string, to: MissionStatus, fromAllowed: MissionStatus[]) {
+    const mission = await this.prisma.mission.findUnique({ where: { id: missionId } });
+    if (!mission) throw new Error('Mission not found');
+    if (!fromAllowed.includes(mission.status as MissionStatus)) {
+      throw new Error(`Cannot transition from ${mission.status} to ${to}`);
+    }
+
+    const data: any = { status: to };
+    if (to === 'COMPLETED' || to === 'ABORTED') data.completedAt = new Date();
+    if (to === 'ACTIVE' && !mission.startedAt) data.startedAt = new Date();
+
+    await this.prisma.mission.update({ where: { id: missionId }, data });
+    this.logger.log(`Mission ${missionId} → ${to}`);
+    return { missionId, status: to };
+  }
+}

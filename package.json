@@ -1,0 +1,19 @@
+{
+  "name": "joppilot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Joppilot Fleet Management & Remote Control",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "turbo": "^1.12.4"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
