@@ -102,4 +102,11 @@ resource "aws_ecs_service" "this" {
     security_groups  = [aws_security_group.this.id]
     assign_public_ip = true
   }
+
+  # Start/stop the task manually (AWS CLI / console) without a code change or PR.
+  # Terraform sets the INITIAL count on create, then ignores it — it won't revert
+  # your manual scaling. Same pattern will apply to the real services in M2-4.
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
 }

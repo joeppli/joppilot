@@ -22,7 +22,7 @@ variable "budget_alert_email" {
 }
 
 variable "hello_world_desired_count" {
-  description = "Fargate hello-world task count. Set to 0 to stop it (no compute cost)."
+  description = "INITIAL Fargate hello-world task count on create. After that, start/stop manually via AWS CLI/console (count is ignored by Terraform)."
   type        = number
   default     = 1
 }

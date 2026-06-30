@@ -38,7 +38,7 @@ variable "memory" {
 }
 
 variable "desired_count" {
-  description = "Number of running tasks. Set to 0 to stop the task (no compute cost) without destroying the service."
+  description = "INITIAL number of running tasks on create. After creation the count is ignored by Terraform (lifecycle.ignore_changes) — start/stop the task manually via AWS CLI/console."
   type        = number
   default     = 1
 }
