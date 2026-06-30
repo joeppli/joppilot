@@ -23,6 +23,15 @@ module "ecr" {
   repository_names = ["joppilot/hello-world"]
 }
 
+# --- M2-2: Fargate hello-world (public subnet, cheapest egress) ---
+module "ecs_hello" {
+  source        = "../../modules/ecs"
+  name_prefix   = "joppilot-${var.environment}"
+  vpc_id        = module.network.vpc_id
+  subnet_ids    = module.network.public_subnet_ids
+  desired_count = var.hello_world_desired_count
+}
+
 # --- Cost guardrail: email alerts as actual spend approaches the monthly budget ---
 # AWS Budgets is free. Thresholds are % of monthly_budget_usd.
 resource "aws_budgets_budget" "monthly" {

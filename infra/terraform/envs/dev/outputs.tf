@@ -28,3 +28,19 @@ output "ecr_repository_urls" {
   description = "ECR repository URLs (image registry for pushes)."
   value       = module.ecr.repository_urls
 }
+
+# --- M2-2 Fargate hello-world ---
+output "hello_cluster_name" {
+  description = "ECS cluster name (for finding the running task)."
+  value       = module.ecs_hello.cluster_name
+}
+
+output "hello_service_name" {
+  description = "ECS service name."
+  value       = module.ecs_hello.service_name
+}
+
+output "hello_log_group" {
+  description = "CloudWatch log group for the hello-world task."
+  value       = module.ecs_hello.log_group
+}
