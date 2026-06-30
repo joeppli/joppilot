@@ -20,3 +20,9 @@ variable "budget_alert_email" {
   description = "Email address that receives the budget alerts."
   type        = string
 }
+
+variable "hello_world_desired_count" {
+  description = "Fargate hello-world task count. Set to 0 to stop it (no compute cost)."
+  type        = number
+  default     = 1
+}
