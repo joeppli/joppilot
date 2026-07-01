@@ -121,8 +121,11 @@ resource "aws_ecs_service" "this" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = var.subnet_ids
-    security_groups  = [aws_security_group.this.id]
+    subnets         = var.subnet_ids
+    security_groups = [aws_security_group.this.id]
+    # INTERIM (M2-3b): a public IP gives the task egress (image pull / logs)
+    # without a NAT gateway while it sits in a public subnet. M2-3c moves the task
+    # to private subnets + VPC endpoints and sets this to false. See root main.tf.
     assign_public_ip = true
   }
 
