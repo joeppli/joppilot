@@ -29,6 +29,12 @@ output "ecr_repository_urls" {
   value       = module.ecr.repository_urls
 }
 
+# --- M2-3b ALB ---
+output "alb_dns_name" {
+  description = "ALB DNS name — browse http://<dns>/ to reach the service (dev interim)."
+  value       = module.alb.dns_name
+}
+
 # --- M2-2 Fargate hello-world ---
 output "hello_cluster_name" {
   description = "ECS cluster name (for finding the running task)."

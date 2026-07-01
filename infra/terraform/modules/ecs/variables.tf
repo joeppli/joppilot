@@ -42,3 +42,15 @@ variable "desired_count" {
   type        = number
   default     = 1
 }
+
+variable "alb_security_group_id" {
+  description = "When set, the task accepts inbound only from this ALB security group (M2-3b). When null, the port is open to the world (standalone M2-2 demo)."
+  type        = string
+  default     = null
+}
+
+variable "target_group_arn" {
+  description = "When set, the service registers tasks into this ALB target group (M2-3b). When null, the service runs without a load balancer."
+  type        = string
+  default     = null
+}

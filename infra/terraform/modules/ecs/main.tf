@@ -40,18 +40,34 @@ resource "aws_iam_role_policy_attachment" "execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# --- Security group: allow inbound to the container port (demo only) ----------
+# --- Security group: inbound to the container port ----------------------------
+# Behind an ALB (M2-3b) the task accepts traffic ONLY from the ALB security
+# group; the world-open rule remains only for the standalone M2-2 demo (no ALB).
 resource "aws_security_group" "this" {
   name        = "${var.name_prefix}-hello-sg"
-  description = "Hello-world container inbound (demo only, no ALB yet)"
+  description = "Hello-world container inbound"
   vpc_id      = var.vpc_id
 
-  ingress {
-    description = "HTTP demo"
-    from_port   = var.container_port
-    to_port     = var.container_port
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  dynamic "ingress" {
+    for_each = var.alb_security_group_id != null ? [1] : []
+    content {
+      description     = "From ALB only"
+      from_port       = var.container_port
+      to_port         = var.container_port
+      protocol        = "tcp"
+      security_groups = [var.alb_security_group_id]
+    }
+  }
+
+  dynamic "ingress" {
+    for_each = var.alb_security_group_id == null ? [1] : []
+    content {
+      description = "HTTP demo (no ALB)"
+      from_port   = var.container_port
+      to_port     = var.container_port
+      protocol    = "tcp"
+      cidr_blocks = ["0.0.0.0/0"]
+    }
   }
 
   egress {
@@ -102,6 +118,21 @@ resource "aws_ecs_service" "this" {
     security_groups  = [aws_security_group.this.id]
     assign_public_ip = true
   }
+
+  # Register into the ALB target group when one is provided (M2-3b). The task
+  # stays in a public subnet for now (egress/image pull); the private-subnet
+  # move + VPC endpoints land in M2-3c alongside API Gateway.
+  dynamic "load_balancer" {
+    for_each = var.target_group_arn != null ? [1] : []
+    content {
+      target_group_arn = var.target_group_arn
+      container_name   = "hello"
+      container_port   = var.container_port
+    }
+  }
+
+  # Give the container time to boot before the ALB starts failing it (LB only).
+  health_check_grace_period_seconds = var.target_group_arn != null ? 30 : null
 
   # Start/stop the task manually (AWS CLI / console) without a code change or PR.
   # Terraform sets the INITIAL count on create, then ignores it — it won't revert
