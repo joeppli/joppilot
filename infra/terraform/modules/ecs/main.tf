@@ -44,21 +44,21 @@ resource "aws_iam_role_policy_attachment" "execution" {
 # Behind an ALB (M2-3b) the task accepts HTTP only from inside the VPC (where the
 # ALB lives); the standalone M2-2 demo (no ALB) stays world-open.
 #
-# NOTE 1: `description` is left at its original value ON PURPOSE — a security
-# group's description/name are IMMUTABLE in AWS, so editing them forces a
-# REPLACEMENT, and the old SG can't be deleted while attached to the running
-# task's ENI (DependencyViolation).
+# WHY name_prefix + create_before_destroy: a SG attached to a running task's ENI
+# cannot be deleted in place, and the repeated M2-3b applies left the original
+# SG's rules in a tangled state (in-place rule edits hit NotFound / Duplicate).
+# Standing up a FRESH SG and moving the service onto it before deleting the old
+# one is a clean create with no rule reconciliation, which sidesteps all of that.
+# name_prefix gives the new SG a unique name (create_before_destroy needs it).
 #
-# NOTE 2: rules are INLINE and use only values known at plan time (the VPC CIDR
-# from the data source below, NOT the ALB SG id, which is created in the same run
-# and is unknown at plan). An unknown security-group reference trips a provider
-# bug ("inconsistent final plan"); moving the same rules to standalone
-# aws_vpc_security_group_*_rule resources instead collides with the SG's existing
-# inline rules ("InvalidPermission.Duplicate"). Real service modules (M2-4) will
-# scope ingress to the ALB SG directly, once those SGs exist across runs.
+# Rules are INLINE and use only values known at plan time: ingress is scoped to
+# the VPC CIDR (data source below), NOT the ALB SG id (created in the same run,
+# unknown at plan — an unknown SG reference trips a provider "inconsistent final
+# plan" bug). Real service modules (M2-4) will scope ingress to the ALB SG
+# directly, once those SGs exist across runs.
 resource "aws_security_group" "this" {
-  name        = "${var.name_prefix}-hello-sg"
-  description = "Hello-world container inbound (demo only, no ALB yet)"
+  name_prefix = "${var.name_prefix}-hello-"
+  description = "Hello-world container inbound"
   vpc_id      = var.vpc_id
 
   ingress {
@@ -78,6 +78,10 @@ resource "aws_security_group" "this" {
   }
 
   tags = { Name = "${var.name_prefix}-hello-sg" }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 data "aws_vpc" "this" {
