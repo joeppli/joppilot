@@ -43,9 +43,17 @@ resource "aws_iam_role_policy_attachment" "execution" {
 # --- Security group: inbound to the container port ----------------------------
 # Behind an ALB (M2-3b) the task accepts traffic ONLY from the ALB security
 # group; the world-open rule remains only for the standalone M2-2 demo (no ALB).
+#
+# NOTE: `description` is left at its original value ON PURPOSE. A security
+# group's description and name are IMMUTABLE in AWS, so editing them forces a
+# REPLACEMENT — and the old SG cannot be deleted while it is still attached to
+# the running task's ENI (DependencyViolation, seen when this text was changed).
+# Only the ingress *rules* below change, which is a safe in-place update. Real
+# service modules (M2-4) will use name_prefix + create_before_destroy so their
+# SGs can be replaced without downtime.
 resource "aws_security_group" "this" {
   name        = "${var.name_prefix}-hello-sg"
-  description = "Hello-world container inbound"
+  description = "Hello-world container inbound (demo only, no ALB yet)"
   vpc_id      = var.vpc_id
 
   dynamic "ingress" {
