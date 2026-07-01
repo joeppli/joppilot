@@ -41,56 +41,47 @@ resource "aws_iam_role_policy_attachment" "execution" {
 }
 
 # --- Security group: inbound to the container port ----------------------------
-# Behind an ALB (M2-3b) the task accepts traffic ONLY from the ALB security
-# group; the world-open rule remains only for the standalone M2-2 demo (no ALB).
+# Behind an ALB (M2-3b) the task accepts HTTP only from inside the VPC (where the
+# ALB lives); the standalone M2-2 demo (no ALB) stays world-open.
 #
-# NOTE: `description` is left at its original value ON PURPOSE. A security
-# group's description and name are IMMUTABLE in AWS, so editing them forces a
-# REPLACEMENT — and the old SG cannot be deleted while it is still attached to
-# the running task's ENI (DependencyViolation, seen when this text was changed).
+# NOTE 1: `description` is left at its original value ON PURPOSE — a security
+# group's description/name are IMMUTABLE in AWS, so editing them forces a
+# REPLACEMENT, and the old SG can't be deleted while attached to the running
+# task's ENI (DependencyViolation).
 #
-# Rules live in SEPARATE resources below (not inline blocks): the ALB rule
-# references a security group created in the same run, whose id is unknown at
-# plan time. Inline dynamic ingress blocks trip an AWS-provider bug with such
-# unknown values ("Provider produced inconsistent final plan"); the dedicated
-# aws_vpc_security_group_*_rule resources handle it cleanly and are the current
-# best practice.
+# NOTE 2: rules are INLINE and use only values known at plan time (the VPC CIDR
+# from the data source below, NOT the ALB SG id, which is created in the same run
+# and is unknown at plan). An unknown security-group reference trips a provider
+# bug ("inconsistent final plan"); moving the same rules to standalone
+# aws_vpc_security_group_*_rule resources instead collides with the SG's existing
+# inline rules ("InvalidPermission.Duplicate"). Real service modules (M2-4) will
+# scope ingress to the ALB SG directly, once those SGs exist across runs.
 resource "aws_security_group" "this" {
   name        = "${var.name_prefix}-hello-sg"
   description = "Hello-world container inbound (demo only, no ALB yet)"
   vpc_id      = var.vpc_id
 
+  ingress {
+    description = "HTTP in (VPC-internal when behind the ALB)"
+    from_port   = var.container_port
+    to_port     = var.container_port
+    protocol    = "tcp"
+    cidr_blocks = [var.alb_security_group_id != null ? data.aws_vpc.this.cidr_block : "0.0.0.0/0"]
+  }
+
+  egress {
+    description = "All outbound (image pull, logs)"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   tags = { Name = "${var.name_prefix}-hello-sg" }
 }
 
-# Ingress when behind the ALB (M2-3b): only the ALB SG may reach the container.
-resource "aws_vpc_security_group_ingress_rule" "from_alb" {
-  count                        = var.alb_security_group_id != null ? 1 : 0
-  security_group_id            = aws_security_group.this.id
-  description                  = "From ALB only"
-  ip_protocol                  = "tcp"
-  from_port                    = var.container_port
-  to_port                      = var.container_port
-  referenced_security_group_id = var.alb_security_group_id
-}
-
-# Ingress for the standalone M2-2 demo (no ALB): open to the world.
-resource "aws_vpc_security_group_ingress_rule" "from_world" {
-  count             = var.alb_security_group_id == null ? 1 : 0
-  security_group_id = aws_security_group.this.id
-  description       = "HTTP demo (no ALB)"
-  ip_protocol       = "tcp"
-  from_port         = var.container_port
-  to_port           = var.container_port
-  cidr_ipv4         = "0.0.0.0/0"
-}
-
-# Egress: all outbound (image pull, CloudWatch logs).
-resource "aws_vpc_security_group_egress_rule" "all" {
-  security_group_id = aws_security_group.this.id
-  description       = "All outbound (image pull, logs)"
-  ip_protocol       = "-1"
-  cidr_ipv4         = "0.0.0.0/0"
+data "aws_vpc" "this" {
+  id = var.vpc_id
 }
 
 # --- Task definition + service ------------------------------------------------
