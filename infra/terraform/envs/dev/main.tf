@@ -23,13 +23,30 @@ module "ecr" {
   repository_names = ["joppilot/hello-world"]
 }
 
-# --- M2-2: Fargate hello-world (public subnet, cheapest egress) ---
+# --- M2-3b: Application Load Balancer in front of the ECS service ---
+# Internet-facing for the dev interim (browser-testable via its DNS name). M2-3c
+# flips it to internal behind API Gateway (WAF + Cognito authorizer) + VPC Link.
+module "alb" {
+  source      = "../../modules/alb"
+  name_prefix = "joppilot-${var.environment}"
+  vpc_id      = module.network.vpc_id
+  subnet_ids  = module.network.public_subnet_ids
+  internal    = false
+}
+
+# --- M2-2/M2-3b: Fargate hello-world, now behind the ALB ---
 module "ecs_hello" {
-  source        = "../../modules/ecs"
-  name_prefix   = "joppilot-${var.environment}"
-  vpc_id        = module.network.vpc_id
-  subnet_ids    = module.network.public_subnet_ids
-  desired_count = var.hello_world_desired_count
+  source                = "../../modules/ecs"
+  name_prefix           = "joppilot-${var.environment}"
+  vpc_id                = module.network.vpc_id
+  subnet_ids            = module.network.public_subnet_ids
+  desired_count         = var.hello_world_desired_count
+  alb_security_group_id = module.alb.security_group_id
+  target_group_arn      = module.alb.target_group_arn
+
+  # Ensure the ALB listener (target-group association) exists before the service
+  # registers, otherwise ECS rejects the load_balancer attachment.
+  depends_on = [module.alb]
 }
 
 # --- M2-3a: Cognito identity + MFA + RBAC groups (free tier, no standing cost) ---
