@@ -1,10 +1,20 @@
 # =============================================================================
 # Joppilot — dev environment root module
 # =============================================================================
-# M2-2 adds the (free) network foundation + ECR. The billable Fargate hello-world
-# and any egress (NAT / VPC endpoints) come in a follow-up step. Still to come:
-#   module "ecs"  { source = "../../modules/ecs"  ... }   # M2-2 Fargate hello-world
-#   module "iot"  { source = "../../modules/iot"  ... }   # M2-5 IoT Core
+# Composes the dev stack: network + ECR + ALB + Fargate hello-world + Cognito.
+#
+# KNOWN INTERIM DEVIATIONS from the target architecture — all M2-3b scaffolding,
+# to be CLOSED in M2-3c (ref: .claude/joppilot_software_architecture.md AD-19):
+#   1. ECS runs in a PUBLIC subnet with a public IP (target: private). M2-3c
+#      moves it to private subnets + VPC endpoints (ECR/logs), not a NAT gateway.
+#   2. The ALB is INTERNET-FACING, HTTP :80, with NO WAF (target: INTERNAL ALB
+#      behind API Gateway + WAF + Cognito authorizer + VPC Link; TLS terminated
+#      at API Gateway/CloudFront).
+#   ==> Do NOT place real services (M2-4) behind this interim public ALB until
+#       M2-3c has closed 1+2. It currently fronts only the nginx hello-world.
+#
+# Still to come: API Gateway/WAF/authorizer + internal ALB + private ECS (M2-3c),
+# Aurora + real services (M2-4), IoT Core (M2-5).
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
@@ -24,8 +34,9 @@ module "ecr" {
 }
 
 # --- M2-3b: Application Load Balancer in front of the ECS service ---
-# Internet-facing for the dev interim (browser-testable via its DNS name). M2-3c
-# flips it to internal behind API Gateway (WAF + Cognito authorizer) + VPC Link.
+# INTERIM (deviation #2 up top): internet-facing, HTTP :80, no WAF — browser-
+# testable via its DNS name. M2-3c flips it to an internal ALB behind API Gateway
+# (WAF + Cognito authorizer) + VPC Link, with TLS at API Gateway/CloudFront.
 module "alb" {
   source      = "../../modules/alb"
   name_prefix = "joppilot-${var.environment}"
@@ -35,6 +46,9 @@ module "alb" {
 }
 
 # --- M2-2/M2-3b: Fargate hello-world, now behind the ALB ---
+# INTERIM (deviation #1 up top): runs in a PUBLIC subnet with a public IP; M2-3c
+# moves it to private subnets + VPC endpoints. The task SG restricts :80 to the
+# VPC CIDR, so the public IP is not internet-reachable on the app port.
 module "ecs_hello" {
   source                = "../../modules/ecs"
   name_prefix           = "joppilot-${var.environment}"
