@@ -35,6 +35,12 @@ output "alb_dns_name" {
   value       = module.alb.dns_name
 }
 
+# --- M2-3c API Gateway ---
+output "api_endpoint" {
+  description = "HTTP API public invoke URL. Requests need a Cognito bearer token (no token → 401)."
+  value       = module.apigw.api_endpoint
+}
+
 # --- M2-2 Fargate hello-world ---
 output "hello_cluster_name" {
   description = "ECS cluster name (for finding the running task)."

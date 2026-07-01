@@ -36,3 +36,9 @@ variable "ingress_cidrs" {
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
+
+variable "enable_waf" {
+  description = "Attach an AWS WAF (regional) WebACL to the ALB. Bills ~$6/mo (WebACL + one managed rule group); toggle off to save cost in idle dev."
+  type        = bool
+  default     = true
+}

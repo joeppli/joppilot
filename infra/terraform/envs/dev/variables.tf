@@ -38,3 +38,9 @@ variable "cognito_logout_urls" {
   type        = list(string)
   default     = ["http://localhost:5173"]
 }
+
+variable "enable_waf" {
+  description = "Attach the WAF WebACL to the ALB (~$6/mo). Set false to save cost while the dev stack is idle."
+  type        = bool
+  default     = true
+}

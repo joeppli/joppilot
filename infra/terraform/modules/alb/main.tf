@@ -80,3 +80,54 @@ resource "aws_lb_listener" "http" {
     target_group_arn = aws_lb_target_group.this.arn
   }
 }
+
+# --- WAF (regional) on the ALB (M2-3c) ----------------------------------------
+# The architecture puts WAF on API Gateway, but WAF only attaches to API Gateway
+# REST APIs (which would force an NLB via VPC Link). With the chosen HTTP API,
+# WAF is attached to the ALB instead — every request still flows API Gateway →
+# VPC Link → ALB, so the same traffic is inspected. Toggle with var.enable_waf.
+resource "aws_wafv2_web_acl" "this" {
+  count = var.enable_waf ? 1 : 0
+  name  = "${var.name_prefix}-alb-waf"
+  scope = "REGIONAL"
+
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "common-rules"
+    priority = 1
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesCommonRuleSet"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.name_prefix}-common-rules"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.name_prefix}-alb-waf"
+    sampled_requests_enabled   = true
+  }
+
+  tags = { Name = "${var.name_prefix}-alb-waf" }
+}
+
+resource "aws_wafv2_web_acl_association" "this" {
+  count        = var.enable_waf ? 1 : 0
+  resource_arn = aws_lb.this.arn
+  web_acl_arn  = aws_wafv2_web_acl.this[0].arn
+}
