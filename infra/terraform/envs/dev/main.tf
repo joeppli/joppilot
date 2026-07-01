@@ -32,6 +32,16 @@ module "ecs_hello" {
   desired_count = var.hello_world_desired_count
 }
 
+# --- M2-3a: Cognito identity + MFA + RBAC groups (free tier, no standing cost) ---
+# The API Gateway Cognito authorizer + internal ALB spine follow in later M2-3 PRs.
+module "cognito" {
+  source        = "../../modules/cognito"
+  name_prefix   = "joppilot-${var.environment}"
+  domain_prefix = "joppilot-${var.environment}-${data.aws_caller_identity.current.account_id}"
+  callback_urls = var.cognito_callback_urls
+  logout_urls   = var.cognito_logout_urls
+}
+
 # --- Cost guardrail: email alerts as actual spend approaches the monthly budget ---
 # AWS Budgets is free. Thresholds are % of monthly_budget_usd.
 resource "aws_budgets_budget" "monthly" {

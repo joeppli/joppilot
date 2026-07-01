@@ -26,3 +26,15 @@ variable "hello_world_desired_count" {
   type        = number
   default     = 1
 }
+
+variable "cognito_callback_urls" {
+  description = "Allowed OAuth redirect URLs for the console SPA. Add the CloudFront URL once the SPA is deployed; localhost is for local dev."
+  type        = list(string)
+  default     = ["http://localhost:5173"]
+}
+
+variable "cognito_logout_urls" {
+  description = "Allowed sign-out redirect URLs for the console SPA."
+  type        = list(string)
+  default     = ["http://localhost:5173"]
+}
