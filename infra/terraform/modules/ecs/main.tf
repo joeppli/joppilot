@@ -48,45 +48,49 @@ resource "aws_iam_role_policy_attachment" "execution" {
 # group's description and name are IMMUTABLE in AWS, so editing them forces a
 # REPLACEMENT — and the old SG cannot be deleted while it is still attached to
 # the running task's ENI (DependencyViolation, seen when this text was changed).
-# Only the ingress *rules* below change, which is a safe in-place update. Real
-# service modules (M2-4) will use name_prefix + create_before_destroy so their
-# SGs can be replaced without downtime.
+#
+# Rules live in SEPARATE resources below (not inline blocks): the ALB rule
+# references a security group created in the same run, whose id is unknown at
+# plan time. Inline dynamic ingress blocks trip an AWS-provider bug with such
+# unknown values ("Provider produced inconsistent final plan"); the dedicated
+# aws_vpc_security_group_*_rule resources handle it cleanly and are the current
+# best practice.
 resource "aws_security_group" "this" {
   name        = "${var.name_prefix}-hello-sg"
   description = "Hello-world container inbound (demo only, no ALB yet)"
   vpc_id      = var.vpc_id
 
-  dynamic "ingress" {
-    for_each = var.alb_security_group_id != null ? [1] : []
-    content {
-      description     = "From ALB only"
-      from_port       = var.container_port
-      to_port         = var.container_port
-      protocol        = "tcp"
-      security_groups = [var.alb_security_group_id]
-    }
-  }
-
-  dynamic "ingress" {
-    for_each = var.alb_security_group_id == null ? [1] : []
-    content {
-      description = "HTTP demo (no ALB)"
-      from_port   = var.container_port
-      to_port     = var.container_port
-      protocol    = "tcp"
-      cidr_blocks = ["0.0.0.0/0"]
-    }
-  }
-
-  egress {
-    description = "All outbound (image pull, logs)"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   tags = { Name = "${var.name_prefix}-hello-sg" }
+}
+
+# Ingress when behind the ALB (M2-3b): only the ALB SG may reach the container.
+resource "aws_vpc_security_group_ingress_rule" "from_alb" {
+  count                        = var.alb_security_group_id != null ? 1 : 0
+  security_group_id            = aws_security_group.this.id
+  description                  = "From ALB only"
+  ip_protocol                  = "tcp"
+  from_port                    = var.container_port
+  to_port                      = var.container_port
+  referenced_security_group_id = var.alb_security_group_id
+}
+
+# Ingress for the standalone M2-2 demo (no ALB): open to the world.
+resource "aws_vpc_security_group_ingress_rule" "from_world" {
+  count             = var.alb_security_group_id == null ? 1 : 0
+  security_group_id = aws_security_group.this.id
+  description       = "HTTP demo (no ALB)"
+  ip_protocol       = "tcp"
+  from_port         = var.container_port
+  to_port           = var.container_port
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+# Egress: all outbound (image pull, CloudWatch logs).
+resource "aws_vpc_security_group_egress_rule" "all" {
+  security_group_id = aws_security_group.this.id
+  description       = "All outbound (image pull, logs)"
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
 }
 
 # --- Task definition + service ------------------------------------------------
