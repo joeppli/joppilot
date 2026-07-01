@@ -43,6 +43,21 @@ module "alb" {
   vpc_id      = module.network.vpc_id
   subnet_ids  = module.network.public_subnet_ids
   internal    = false
+  enable_waf  = var.enable_waf
+}
+
+# --- M2-3c-1a: HTTP API Gateway + Cognito JWT authorizer + VPC Link → ALB ---
+# The public front door (AD-19). For 1a the ALB is still internet-facing; 1b
+# flips it internal so API Gateway becomes the ONLY public entry point.
+module "apigw" {
+  source             = "../../modules/apigw"
+  name_prefix        = "joppilot-${var.environment}"
+  vpc_id             = module.network.vpc_id
+  subnet_ids         = module.network.private_subnet_ids
+  vpc_cidr           = module.network.vpc_cidr
+  alb_listener_arn   = module.alb.listener_arn
+  cognito_issuer_url = module.cognito.issuer_url
+  cognito_client_id  = module.cognito.client_id
 }
 
 # --- M2-2/M2-3b: Fargate hello-world, now behind the ALB ---
