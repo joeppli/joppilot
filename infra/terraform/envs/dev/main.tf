@@ -43,10 +43,6 @@ module "ecs_hello" {
   desired_count         = var.hello_world_desired_count
   alb_security_group_id = module.alb.security_group_id
   target_group_arn      = module.alb.target_group_arn
-
-  # Ensure the ALB listener (target-group association) exists before the service
-  # registers, otherwise ECS rejects the load_balancer attachment.
-  depends_on = [module.alb]
 }
 
 # --- M2-3a: Cognito identity + MFA + RBAC groups (free tier, no standing cost) ---
