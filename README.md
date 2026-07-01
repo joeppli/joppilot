@@ -6,7 +6,8 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 
 > Authoritative specs live in [`.claude/`](.claude/): the interface contract (ICD),
 > software architecture (AD-1..AD-21), constraints and timeline. **Read those before
-> changing behaviour** — this README only covers how to run the stack locally.
+> changing behaviour** — this README covers running the stack **locally** and the
+> deployed **AWS (M2)** environment (see [Cloud (AWS) — M2](#cloud-aws--m2-migration)).
 
 ## Architecture at a glance
 
@@ -32,7 +33,7 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 - **Permit-gated zone change** (ICD §1) — controlled + logged, not an instant override: opening Mode 2 on a public route (→ `public_test_permit`) requires a cantonal permit (`permitId` + validity window); the zone reverts to the safe default when the permit lapses.
 - **Live map** (AD-15) — swisstopo tiles via MapLibre, vehicle position + approved-zone overlay.
 
-> **Not yet (M2 / AWS):** dual-path E-STOP, WORM/Object-Lock audit, Cognito/RBAC/MFA, log sync, graduated failsafe, video (KVS WebRTC). See `.claude/joppilot_project_timeline.md`.
+> **Not yet:** dual-path E-STOP, WORM/Object-Lock audit, in-app RBAC enforcement, log sync, graduated failsafe, video (KVS WebRTC). **Cognito identity + MFA + the API Gateway authorizer are already deployed** — see [Cloud (AWS) — M2](#cloud-aws--m2-migration). Track: `.claude/joppilot_project_timeline.md`.
 
 ---
 
@@ -151,6 +152,86 @@ pnpm --filter @joppilot/contract test
 # PreDepartureCheck (NOT TelemetryRecord)
 docker exec joppilot_postgres psql -U joppilot -d joppilot_db -c "\dt"
 ```
+
+---
+
+## Cloud (AWS) — M2 migration
+
+`infra/terraform/` provisions the AWS environment, applied by **GitHub Actions via
+OIDC** (no stored keys): a PR runs `terraform plan`, a merge to `main` runs
+`terraform apply`. Remote state lives in S3 + a DynamoDB lock. Primary region:
+**eu-central-1 (Frankfurt)** — AD-17 (IoT Core / KVS WebRTC aren't in Zurich; the
+revFADP permits EU/EEA hosting, DAT-08).
+
+```
+infra/terraform/
+  envs/dev/          # dev environment: composition + backend + vars (start here)
+  modules/network/   # VPC, multi-AZ public/private subnets, IGW, route tables
+  modules/ecr/       # container registry
+  modules/ecs/       # Fargate hello-world (nginx) + task SG
+  modules/alb/       # Application Load Balancer + target group + WAF
+  modules/cognito/   # user pool (invite-only, MFA/TOTP), admin/operator groups
+  modules/apigw/     # HTTP API + Cognito JWT authorizer + VPC Link
+  bootstrap/         # one-time: S3 state bucket, DynamoDB lock, OIDC CI role
+```
+
+### Deployed so far
+
+| Milestone | What | Status |
+|---|---|---|
+| M2-1 | Terraform skeleton + GitHub Actions OIDC CI/CD | ✅ |
+| M2-2 | VPC (multi-AZ) + ECR + Fargate hello-world (nginx) | ✅ |
+| M2-3a | Cognito: invite-only, MFA (TOTP), `admin`/`operator` groups | ✅ |
+| M2-3b | ALB in front of ECS (interim internet-facing) | ✅ |
+| M2-3c-1a | HTTP API Gateway + Cognito JWT authorizer + VPC Link + WAF | ✅ |
+| M2-3c-1b | flip ALB → **internal** (API Gateway becomes the only entry) | ⏳ next |
+| M2-3c-2 | move ECS to **private** subnets + VPC endpoints | ⏳ |
+| M2-4 | real services (command/telemetry/fleet) on ECS + Aurora | ⏳ |
+| M2-5 | IoT Core (MQTT backbone, mTLS, Device Shadow) | ⏳ |
+
+### Ingress path (current)
+
+```
+client ──HTTPS──▶ API Gateway (HTTP API, Cognito JWT authorizer)
+                    └─▶ VPC Link ─▶ ALB (WAF) ─▶ ECS Fargate (nginx)
+```
+
+> **Interim deviations, closed in M2-3c** (recorded in `infra/terraform/envs/dev/main.tf`):
+> the ALB is still internet-facing (HTTP :80) and ECS runs in a public subnet. Do
+> **not** place real services (M2-4) behind this until 1b/2 make the ALB internal +
+> ECS private.
+
+### Test the cloud stack
+
+Read `api_endpoint` / `alb_dns_name` from the Actions **apply** log (`Outputs:`
+block) or the AWS console.
+
+```bash
+# API Gateway — no token must be rejected by the Cognito authorizer:
+curl -i https://<api_endpoint>/            # → HTTP 401 {"message":"Unauthorized"}
+
+# Direct ALB (interim, HTTP) — nginx when the task runs, 503 when scaled to 0:
+curl -i http://<alb_dns_name>/             # → 200 "Welcome to nginx!" | 503
+```
+
+A valid Cognito **bearer token** on the API Gateway call reaches nginx (needs a
+user — invite-only). Gotcha: the authorizer's audience is the app client id; if a
+valid token still 401s, send the **ID token** (Cognito access tokens have no `aud`).
+
+### Cost control (stop paying overnight)
+
+Fargate is the main variable cost. Scale the task to 0 when you stop for the day —
+the service uses `ignore_changes = [desired_count]`, so Terraform won't revert it:
+
+```bash
+aws ecs update-service --cluster joppilot-dev-cluster \
+  --service joppilot-dev-hello --desired-count 0 --region eu-central-1
+# resume: --desired-count 1   (or ECS console → service → Update)
+```
+
+Standing costs that do **not** scale to zero: **ALB (~$16/mo)** + **WAF (~$6/mo,**
+toggle `enable_waf = false`**)**. Near-$0 needs `terraform destroy`. An `$80/mo` AWS
+Budgets alarm emails at 50 / 80 / 100 %.
 
 ---
 
