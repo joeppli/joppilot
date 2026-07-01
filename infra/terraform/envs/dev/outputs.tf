@@ -44,3 +44,29 @@ output "hello_log_group" {
   description = "CloudWatch log group for the hello-world task."
   value       = module.ecs_hello.log_group
 }
+
+# --- M2-3a Cognito ---
+output "cognito_user_pool_id" {
+  description = "Cognito user pool id."
+  value       = module.cognito.user_pool_id
+}
+
+output "cognito_client_id" {
+  description = "SPA app-client id (token audience)."
+  value       = module.cognito.client_id
+}
+
+output "cognito_issuer_url" {
+  description = "OIDC issuer URL (JWT iss claim; used by the future API Gateway authorizer)."
+  value       = module.cognito.issuer_url
+}
+
+output "cognito_hosted_ui_domain" {
+  description = "Cognito hosted-UI base domain for OAuth login/logout."
+  value       = module.cognito.hosted_ui_domain
+}
+
+output "cognito_group_names" {
+  description = "RBAC group names (map to roles via the cognito:groups JWT claim)."
+  value       = module.cognito.group_names
+}
