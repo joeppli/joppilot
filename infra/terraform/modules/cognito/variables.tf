@@ -9,15 +9,15 @@ variable "domain_prefix" {
 }
 
 variable "callback_urls" {
-  description = "Allowed OAuth redirect URLs for the SPA (hosted-UI login returns here). localhost is allowed over http; everything else must be https."
+  description = "Allowed OAuth redirect URLs for the SPA (hosted-UI login returns here). localhost is allowed over http; everything else must be https. Port must match the console dev server (3000, apps/console/vite.config.ts)."
   type        = list(string)
-  default     = ["http://localhost:5173"]
+  default     = ["http://localhost:3000"]
 }
 
 variable "logout_urls" {
-  description = "Allowed sign-out redirect URLs for the SPA."
+  description = "Allowed sign-out redirect URLs for the SPA (same port rule as callback_urls)."
   type        = list(string)
-  default     = ["http://localhost:5173"]
+  default     = ["http://localhost:3000"]
 }
 
 variable "mfa_configuration" {

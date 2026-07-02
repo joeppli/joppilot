@@ -14,7 +14,7 @@ infra/terraform/
   bootstrap/        # run ONCE by hand (state backend + GitHub OIDC + CI role) — see bootstrap/README.md
   envs/
     dev/            # the dev environment root module (terraform runs here)
-  modules/          # reusable building blocks (network, ecr, ecs, iot, ...) — added from M2-2
+  modules/          # reusable building blocks: network, ecr, ecs, alb, cognito, apigw
 ```
 
 ## First-time setup
@@ -25,17 +25,22 @@ infra/terraform/
 4. Open a PR changing anything under `infra/terraform/` → CI posts a `plan`.
 5. Merge to `main` → CI runs `apply`.
 
-## What's here now (M2-1)
+## What's here now (through M2-3c-1b)
 
-A **skeleton** that proves the whole pipeline works end-to-end with no real
-infrastructure yet: `terraform plan` succeeds and reports "No changes". The dev
-root module only reads back the account id + region so a plan confirms credentials
-and the backend are wired correctly. Real resources land in:
+The deployed dev stack: VPC (multi-AZ public/private subnets) + ECR + ECS Fargate
+hello-world (nginx) + Cognito (invite-only, MFA/TOTP, `admin`/`operator` groups) +
+HTTP API Gateway (Cognito JWT authorizer → VPC Link) + **internal ALB** (with WAF).
+API Gateway is the only public entry point. Known interim deviations are recorded
+in the comment at the top of [`envs/dev/main.tf`](envs/dev/main.tf) — currently
+one remains: ECS still runs in a public subnet (closes in M2-3c-2). Still to come:
 
-- **M2-2** — VPC (multi-AZ), ECR, VPC endpoints, an ECS Fargate hello-world.
-- **M2-3** — Cognito + API Gateway (WAF + authorizer) → VPC Link → internal ALB.
-- **M2-4** — services on Fargate + Aurora PostgreSQL.
+- **M2-3c-2** — ECS to private subnets + VPC endpoints.
+- **M2-4** — real services (command/telemetry/fleet) on Fargate + Aurora PostgreSQL.
 - **M2-5** — IoT Core (topics, X.509/mTLS, Device Shadow).
+
+**Cost control:** the billable pieces (ALB+WAF, ~$22/mo) tear down with the
+`terraform-destroy-billables` workflow (Actions tab) and come back by re-running
+the `terraform` workflow — details in the root README's cost-control section.
 
 ## Running locally (optional)
 

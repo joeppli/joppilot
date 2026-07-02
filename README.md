@@ -184,8 +184,8 @@ infra/terraform/
 | M2-3a | Cognito: invite-only, MFA (TOTP), `admin`/`operator` groups | ✅ |
 | M2-3b | ALB in front of ECS (interim internet-facing) | ✅ |
 | M2-3c-1a | HTTP API Gateway + Cognito JWT authorizer + VPC Link + WAF | ✅ |
-| M2-3c-1b | flip ALB → **internal** (API Gateway becomes the only entry) | ⏳ next |
-| M2-3c-2 | move ECS to **private** subnets + VPC endpoints | ⏳ |
+| M2-3c-1b | ALB → **internal** (API Gateway is now the only public entry) | ✅ |
+| M2-3c-2 | move ECS to **private** subnets + VPC endpoints | ⏳ next |
 | M2-4 | real services (command/telemetry/fleet) on ECS + Aurora | ⏳ |
 | M2-5 | IoT Core (MQTT backbone, mTLS, Device Shadow) | ⏳ |
 
@@ -193,25 +193,33 @@ infra/terraform/
 
 ```
 client ──HTTPS──▶ API Gateway (HTTP API, Cognito JWT authorizer)
-                    └─▶ VPC Link ─▶ ALB (WAF) ─▶ ECS Fargate (nginx)
+                    └─▶ VPC Link ─▶ internal ALB (WAF) ─▶ ECS Fargate (nginx)
 ```
 
-> **Interim deviations, closed in M2-3c** (recorded in `infra/terraform/envs/dev/main.tf`):
-> the ALB is still internet-facing (HTTP :80) and ECS runs in a public subnet. Do
-> **not** place real services (M2-4) behind this until 1b/2 make the ALB internal +
-> ECS private.
+The ALB is **internal** since M2-3c-1b: private subnets, SG restricted to the VPC —
+its DNS name no longer answers from the internet, and API Gateway is the **only**
+public entry point.
+
+> **Remaining interim deviation, closes in M2-3c-2** (recorded in
+> `infra/terraform/envs/dev/main.tf`): ECS still runs in a public subnet with a
+> public IP. Do **not** place real services (M2-4) behind this stack until
+> M2-3c-2 moves ECS to private subnets.
 
 ### Test the cloud stack
 
-Read `api_endpoint` / `alb_dns_name` from the Actions **apply** log (`Outputs:`
-block) or the AWS console.
+Read `api_endpoint` from the Actions **apply** log (`Outputs:` block) or the AWS
+console. It gets a NEW value on every destroy/restore cycle (see cost control).
 
 ```bash
-# API Gateway — no token must be rejected by the Cognito authorizer:
+# No token must be rejected by the Cognito authorizer:
 curl -i https://<api_endpoint>/            # → HTTP 401 {"message":"Unauthorized"}
 
-# Direct ALB (interim, HTTP) — nginx when the task runs, 503 when scaled to 0:
-curl -i http://<alb_dns_name>/             # → 200 "Welcome to nginx!" | 503
+# With a Cognito ID token (and the task scaled to 1) → nginx:
+curl -H "Authorization: Bearer <ID_TOKEN>" https://<api_endpoint>/   # → 200
+
+# The internal ALB does NOT answer from the internet — a timeout here is correct
+# behaviour (proof that API Gateway is the only entry), not an error:
+curl -m 10 http://<alb_dns_name>/          # → timeout
 ```
 
 A valid Cognito **bearer token** on the API Gateway call reaches nginx (needs a
@@ -229,9 +237,14 @@ aws ecs update-service --cluster joppilot-dev-cluster \
 # resume: --desired-count 1   (or ECS console → service → Update)
 ```
 
-Standing costs that do **not** scale to zero: **ALB (~$16/mo)** + **WAF (~$6/mo,**
-toggle `enable_waf = false`**)**. Near-$0 needs `terraform destroy`. An `$80/mo` AWS
-Budgets alarm emails at 50 / 80 / 100 %.
+Standing costs that do **not** scale to zero: **ALB (~$16/mo)** + **WAF (~$6/mo)**.
+For those there is a one-click **destroy button**: Actions → `terraform-destroy-billables`
+→ Run workflow → set confirm to `destroy-billables`. It destroys only the billable
+pieces (ALB+WAF, API Gateway, ECS service) and keeps everything free — VPC, **Cognito
+users + MFA enrollments**, ECR, the ECS cluster. Restore: run the `terraform` workflow
+manually (or merge any infra PR — apply rebuilds it); the service comes back with 0
+tasks and `api_endpoint` gets a new URL. An `$80/mo` AWS Budgets alarm emails at
+50 / 80 / 100 %.
 
 ---
 
