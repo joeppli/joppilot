@@ -14,9 +14,9 @@ variable "subnet_ids" {
 }
 
 variable "internal" {
-  description = "false = internet-facing (dev interim, browser-testable). Flip to true in M2-3c when API Gateway + VPC Link front it."
+  description = "true = internal (target posture since M2-3c-1b: reachable only inside the VPC, fronted by API Gateway + VPC Link). false was the M2-3b browser-testable dev interim."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "container_port" {
@@ -32,9 +32,8 @@ variable "health_check_path" {
 }
 
 variable "ingress_cidrs" {
-  description = "Source CIDRs allowed to reach the ALB on :80. Open for the dev interim; tightened to the VPC/VPC-Link surface once API Gateway fronts it."
+  description = "Source CIDRs allowed to reach the ALB on :80. With the internal ALB this is the VPC CIDR — the API Gateway VPC Link ENIs are the only expected callers. No default: each environment must state its surface explicitly."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
 }
 
 variable "enable_waf" {

@@ -31,7 +31,7 @@ output "ecr_repository_urls" {
 
 # --- M2-3b ALB ---
 output "alb_dns_name" {
-  description = "ALB DNS name — browse http://<dns>/ to reach the service (dev interim)."
+  description = "ALB DNS name. Internal since M2-3c-1b — only answers inside the VPC; use api_endpoint (with a Cognito ID token) to test from outside."
   value       = module.alb.dns_name
 }
 

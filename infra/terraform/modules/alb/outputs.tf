@@ -1,5 +1,5 @@
 output "dns_name" {
-  description = "ALB DNS name — hit this to reach the service (dev: http://<dns>/)."
+  description = "ALB DNS name. Internal since M2-3c-1b: resolves to private IPs and answers only inside the VPC — test through the API Gateway endpoint instead."
   value       = aws_lb.this.dns_name
 }
 
