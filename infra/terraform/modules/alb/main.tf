@@ -1,18 +1,20 @@
 # =============================================================================
-# ALB module — Application Load Balancer in front of the ECS service (M2-3b)
+# ALB module — internal Application Load Balancer behind API Gateway (M2-3b/3c)
 # =============================================================================
-# Introduces the load-balancing layer the real services (M2-4) will sit behind:
-# a target group with health checks and an HTTP listener. For the dev interim
-# the ALB is internet-facing so it is browser-testable via its DNS name — the
-# same "see it work" posture as the M2-2 nginx demo.
-#
-# End state (M2-3c): scheme flips to internal and API Gateway (WAF + Cognito
-# authorizer) → VPC Link fronts it; ECS then never faces the internet directly.
+# The load-balancing layer the real services (M2-4) will sit behind: a target
+# group with health checks and an HTTP listener. INTERNAL since M2-3c-1b
+# (AD-19): it lives in private subnets, resolves to private IPs, and answers
+# only from inside the VPC — API Gateway (JWT authorizer) → VPC Link is the
+# single public entry point.
 #
 # Cost: an ALB has a standing hourly charge (~$16/mo) + LCUs — it cannot scale
 # to zero like a Fargate task. Tear it down with `terraform destroy` when idle.
 
-# --- ALB security group: inbound :80, all outbound to targets -----------------
+# --- ALB security group: inbound :80 from the VPC, all outbound to targets ----
+# The M2-3c-1b tightening (0.0.0.0/0 → VPC CIDR) is an IN-PLACE rule edit: the
+# SG itself is deliberately NOT replaced, so its id stays known at plan time and
+# no unknown value ripples into the ECS module's rules (the M2-3b
+# "inconsistent final plan" trap).
 resource "aws_security_group" "alb" {
   name        = "${var.name_prefix}-alb-sg"
   description = "ALB inbound HTTP; forwards to ECS targets"
@@ -37,14 +39,25 @@ resource "aws_security_group" "alb" {
   tags = { Name = "${var.name_prefix}-alb-sg" }
 }
 
+# WHY name_prefix + create_before_destroy: the internet-facing → internal flip
+# (M2-3c-1b) changes the LB scheme, which AWS cannot mutate in place — Terraform
+# must REPLACE the load balancer. create_before_destroy stands the new internal
+# ALB up before the old one is destroyed, so the listener/WAF/API-GW integration
+# can cut over without the stack ever losing its ALB. Both ALBs briefly coexist,
+# so their names must differ: name_prefix (AWS caps it at 6 chars for LBs)
+# generates a unique name; the console-friendly name lives on the Name tag.
 resource "aws_lb" "this" {
-  name               = "${var.name_prefix}-alb"
+  name_prefix        = substr(var.name_prefix, 0, 6) # "joppil…" — 6-char AWS limit
   internal           = var.internal
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
   subnets            = var.subnet_ids
 
   tags = { Name = "${var.name_prefix}-alb" }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # --- Target group: Fargate tasks register by IP (awsvpc networking) -----------
