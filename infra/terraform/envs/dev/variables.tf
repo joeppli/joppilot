@@ -28,15 +28,15 @@ variable "hello_world_desired_count" {
 }
 
 variable "cognito_callback_urls" {
-  description = "Allowed OAuth redirect URLs for the console SPA. Add the CloudFront URL once the SPA is deployed; localhost is for local dev."
+  description = "Allowed OAuth redirect URLs for the console SPA. Add the CloudFront URL once the SPA is deployed; localhost:3000 matches the console dev server port (apps/console/vite.config.ts)."
   type        = list(string)
-  default     = ["http://localhost:5173"]
+  default     = ["http://localhost:3000"]
 }
 
 variable "cognito_logout_urls" {
-  description = "Allowed sign-out redirect URLs for the console SPA."
+  description = "Allowed sign-out redirect URLs for the console SPA (port must match the console dev server, see cognito_callback_urls)."
   type        = list(string)
-  default     = ["http://localhost:5173"]
+  default     = ["http://localhost:3000"]
 }
 
 variable "enable_waf" {
