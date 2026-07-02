@@ -1,0 +1,106 @@
+name: terraform-destroy-billables
+
+# The weekend cost button. Destroys ONLY the modules with a standing hourly
+# charge — the ALB (+WAF, ~$22/mo combined) and the API Gateway stack — plus
+# whatever depends on them (the ECS hello service and its task SG get swept in
+# automatically as dependents). Everything free stays untouched: VPC/subnets,
+# Cognito (users + MFA enrollments!), ECR, ECS cluster/task definition/IAM
+# roles, CloudWatch logs, budget alarm.
+#
+# HOW TO USE:
+#   Tear down (weekend):  Actions -> terraform-destroy-billables -> Run workflow
+#                         -> set "confirm" to destroy-billables -> Run.
+#   Restore (Monday):     Actions -> terraform -> Run workflow. The normal apply
+#                         recreates everything from code. Note: the API Gateway
+#                         invoke URL and ALB DNS change on every recreate (new
+#                         ids) — nothing depends on them yet in dev.
+#
+# SAFETY:
+#   - The "confirm" dropdown defaults to "no"; the job refuses to run without
+#     the explicit destroy-billables selection.
+#   - Runs only from main, so it always destroys what main describes.
+#   - Shares the "terraform-dev" concurrency group with the apply workflow, so
+#     a destroy can never race a plan/apply (plus the DynamoDB state lock).
+#   - `-target` makes Terraform warn that this is not a normal full run — that
+#     warning is expected here; the whole point is a partial destroy.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Really destroy the billable dev resources (ALB+WAF, API Gateway, ECS service)?"
+        type: choice
+        options:
+          - "no"
+          - "destroy-billables"
+        default: "no"
+        required: true
+
+permissions:
+  id-token: write # required to request the OIDC token
+  contents: read
+
+concurrency:
+  group: terraform-dev
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-central-1
+  TF_WORKDIR: infra/terraform/envs/dev
+
+jobs:
+  destroy-billables:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKDIR }}
+    steps:
+      - name: Guard — explicit confirmation required
+        if: ${{ inputs.confirm != 'destroy-billables' }}
+        working-directory: .
+        run: |
+          echo "::error::Confirmation dropdown was '${{ inputs.confirm }}' — select 'destroy-billables' to proceed. Nothing was destroyed."
+          exit 1
+
+      - name: Guard — main branch only
+        if: ${{ github.ref != 'refs/heads/main' }}
+        working-directory: .
+        run: |
+          echo "::error::This button only runs from main (got '${{ github.ref }}'), so it always destroys exactly what main describes."
+          exit 1
+
+      - name: Guard — require AWS_CI_ROLE_ARN
+        if: ${{ vars.AWS_CI_ROLE_ARN == '' }}
+        working-directory: .
+        run: |
+          echo "::error::AWS_CI_ROLE_ARN repo variable is not set — run bootstrap.sh and add it (Settings -> Secrets and variables -> Actions -> Variables)."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform init
+        run: terraform init -input=false
+
+      # Targeted destroy: the two billable modules. Terraform automatically also
+      # destroys their dependents (ECS service + task SG reference ALB outputs).
+      - name: Terraform destroy (billables only)
+        run: |
+          terraform destroy -input=false -auto-approve -no-color \
+            -target=module.alb \
+            -target=module.apigw
+
+      - name: Show what remains in the stack
+        run: |
+          echo "Resources still standing (all free / near-free):"
+          terraform state list
