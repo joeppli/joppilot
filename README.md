@@ -185,8 +185,8 @@ infra/terraform/
 | M2-3b | ALB in front of ECS (interim internet-facing) | ✅ |
 | M2-3c-1a | HTTP API Gateway + Cognito JWT authorizer + VPC Link + WAF | ✅ |
 | M2-3c-1b | ALB → **internal** (API Gateway is now the only public entry) | ✅ |
-| M2-3c-2 | move ECS to **private** subnets + VPC endpoints | ⏳ next |
-| M2-4 | real services (command/telemetry/fleet) on ECS + Aurora | ⏳ |
+| M2-3c-2 | ECS in **private** subnets, no public IP; VPC endpoints (ECR/logs/S3); image from our ECR | ✅ |
+| M2-4 | real services (command/telemetry/fleet) on ECS + Aurora | ⏳ next |
 | M2-5 | IoT Core (MQTT backbone, mTLS, Device Shadow) | ⏳ |
 | later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
 
@@ -201,10 +201,9 @@ The ALB is **internal** since M2-3c-1b: private subnets, SG restricted to the VP
 its DNS name no longer answers from the internet, and API Gateway is the **only**
 public entry point.
 
-> **Remaining interim deviation, closes in M2-3c-2** (recorded in
-> `infra/terraform/envs/dev/main.tf`): ECS still runs in a public subnet with a
-> public IP. Do **not** place real services (M2-4) behind this stack until
-> M2-3c-2 moves ECS to private subnets.
+> **No interim deviations remain** — M2-3c is complete. ECS runs in private
+> subnets with no public IP; image pull (private ECR) and logs flow through VPC
+> endpoints. The stack is ready to receive the real services (M2-4).
 
 ### Test the cloud stack
 
@@ -238,14 +237,15 @@ aws ecs update-service --cluster joppilot-dev-cluster \
 # resume: --desired-count 1   (or ECS console → service → Update)
 ```
 
-Standing costs that do **not** scale to zero: **ALB (~$16/mo)** + **WAF (~$6/mo)**.
-For those there is a one-click **destroy button**: Actions → `terraform-destroy-billables`
-→ Run workflow → set confirm to `destroy-billables`. It destroys only the billable
-pieces (ALB+WAF, API Gateway, ECS service) and keeps everything free — VPC, **Cognito
-users + MFA enrollments**, ECR, the ECS cluster. Restore: run the `terraform` workflow
-manually (or merge any infra PR — apply rebuilds it); the service comes back with 0
-tasks and `api_endpoint` gets a new URL. An `$80/mo` AWS Budgets alarm emails at
-50 / 80 / 100 %.
+Standing costs that do **not** scale to zero: **ALB (~$16/mo)** + **WAF (~$6/mo)** +
+**3 interface VPC endpoints (~$26/mo, single-AZ)** ≈ **$48/mo total**. For those there
+is a one-click **destroy button**: Actions → `terraform-destroy-billables` → Run
+workflow → set confirm to `destroy-billables`. It destroys only the billable pieces
+(ALB+WAF, API Gateway, VPC endpoints, ECS service) and keeps everything free — VPC,
+**Cognito users + MFA enrollments**, ECR (pushed images survive), the ECS cluster.
+Restore: run the `terraform` workflow manually (or merge any infra PR — apply rebuilds
+it); the service comes back with 0 tasks and `api_endpoint` gets a new URL. An
+`$80/mo` AWS Budgets alarm emails at 50 / 80 / 100 %.
 
 ---
 

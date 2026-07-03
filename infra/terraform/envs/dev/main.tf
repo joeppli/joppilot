@@ -4,22 +4,16 @@
 # Composes the dev stack: network + ECR + internal ALB + Fargate hello-world +
 # Cognito + API Gateway.
 #
-# KNOWN INTERIM DEVIATIONS from the target architecture — M2-3b scaffolding,
-# being closed step by step in M2-3c (ref: .claude/joppilot_software_architecture.md AD-19):
-#   1. STILL OPEN — ECS runs in a PUBLIC subnet with a public IP (target:
-#      private). M2-3c-2 moves it to private subnets + VPC endpoints (ECR/logs),
-#      not a NAT gateway. Its SG allows :80 only from inside the VPC, so the
-#      public IP is not internet-reachable on the app port.
-#   2. CLOSED in M2-3c-1b — the ALB is now INTERNAL: private subnets, SG
-#      restricted to the VPC CIDR. API Gateway (Cognito JWT authorizer; WAF
-#      attached on the ALB) → VPC Link is the ONLY public entry point (AD-19).
-#   ==> Do NOT place real services (M2-4) behind this stack until M2-3c-2 has
-#       closed deviation 1. The ALB currently fronts only the nginx hello-world.
+# TARGET NETWORK POSTURE REACHED — M2-3c complete (AD-19): API Gateway (Cognito
+# JWT authorizer) → VPC Link → internal ALB (WAF) → ECS in PRIVATE subnets with
+# no public IP; AWS API access (ECR pull, CloudWatch logs) flows through VPC
+# endpoints, not a NAT gateway. No interim deviations remain — the real services
+# (M2-4) may now be placed behind this stack.
 #
-# Still to come: private ECS + VPC endpoints (M2-3c-2), Aurora + real services
-# (M2-4), IoT Core (M2-5), and — with the SPA's cloud deployment (post M2-5) —
-# S3+CloudFront in front of everything, at which point the WAF moves from the
-# ALB to CloudFront (AD-19; see the WAF-placement note in the architecture doc).
+# Still to come: Aurora + real services (M2-4), IoT Core (M2-5), and — with the
+# SPA's cloud deployment (post M2-5) — S3+CloudFront in front of everything, at
+# which point the WAF moves from the ALB to CloudFront (AD-19; see the
+# WAF-placement note in the architecture doc).
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
@@ -67,15 +61,28 @@ module "apigw" {
   cognito_client_id  = module.cognito.client_id
 }
 
-# --- M2-2/M2-3b: Fargate hello-world, now behind the ALB ---
-# INTERIM (deviation #1 up top): runs in a PUBLIC subnet with a public IP;
-# M2-3c-2 moves it to private subnets + VPC endpoints. The task SG restricts :80
-# to the VPC CIDR, so the public IP is not internet-reachable on the app port.
+# --- M2-3c-2: VPC endpoints — private AWS API access for the private ECS task ---
+# ecr.api + ecr.dkr + logs (interface, ~$26/mo single-AZ) + S3 gateway (free).
+# Chosen over a NAT gateway per architecture §6.1 (cheaper + no per-GB egress).
+module "endpoints" {
+  source          = "../../modules/endpoints"
+  name_prefix     = "joppilot-${var.environment}"
+  vpc_id          = module.network.vpc_id
+  vpc_cidr        = module.network.vpc_cidr
+  subnet_ids      = [module.network.private_subnet_ids[0]] # single AZ — dev cost posture
+  route_table_ids = module.network.private_route_table_ids
+}
+
+# --- M2-2/M2-3c-2: Fargate hello-world — private subnets, image from our ECR ---
+# No public IP (deviation #1 closed): image pull + logs go through the VPC
+# endpoints above. The image must exist in the ECR repo before the task can
+# start: push nginx once via CloudShell (see infra/terraform/README.md).
 module "ecs_hello" {
   source                = "../../modules/ecs"
   name_prefix           = "joppilot-${var.environment}"
   vpc_id                = module.network.vpc_id
-  subnet_ids            = module.network.public_subnet_ids
+  subnet_ids            = module.network.private_subnet_ids
+  container_image       = "${module.ecr.repository_urls["joppilot/hello-world"]}:latest"
   desired_count         = var.hello_world_desired_count
   alb_security_group_id = module.alb.security_group_id
   target_group_arn      = module.alb.target_group_arn

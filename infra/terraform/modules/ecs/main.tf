@@ -1,11 +1,11 @@
 # =============================================================================
-# ECS module — Fargate hello-world (M2-2)
+# ECS module — Fargate hello-world (M2-2, hardened in M2-3c-2)
 # =============================================================================
-# Proves Fargate works end to end. Cheapest posture: the task runs in a PUBLIC
-# subnet with a public IP (no NAT, no VPC endpoints) and pulls a public image.
-# Real services (M2-4) will instead run in private subnets behind the ALB (M2-3).
+# Proves Fargate works end to end. Since M2-3c-2 the task runs in PRIVATE
+# subnets with NO public IP; the image comes from our private ECR and image
+# pull / log delivery flow through the VPC endpoints (see the endpoints
+# module). This is the same network posture the real services (M2-4) will use.
 #
-# Inbound :80 is open to the world for the demo only — there is no ALB yet.
 # Stop the task any time with desired_count = 0 (keeps the definition, drops cost).
 
 data "aws_region" "current" {}
@@ -123,15 +123,13 @@ resource "aws_ecs_service" "this" {
   network_configuration {
     subnets         = var.subnet_ids
     security_groups = [aws_security_group.this.id]
-    # INTERIM (M2-3b): a public IP gives the task egress (image pull / logs)
-    # without a NAT gateway while it sits in a public subnet. M2-3c moves the task
-    # to private subnets + VPC endpoints and sets this to false. See root main.tf.
-    assign_public_ip = true
+    # Private subnets, no public IP (M2-3c-2). The task's only egress need is
+    # the AWS APIs (ECR image pull, CloudWatch logs), reached through the VPC
+    # endpoints — see the endpoints module.
+    assign_public_ip = false
   }
 
-  # Register into the ALB target group when one is provided (M2-3b). The task
-  # stays in a public subnet for now (egress/image pull); the private-subnet
-  # move + VPC endpoints land in M2-3c alongside API Gateway.
+  # Register into the ALB target group when one is provided (M2-3b).
   dynamic "load_balancer" {
     for_each = var.target_group_arn != null ? [1] : []
     content {

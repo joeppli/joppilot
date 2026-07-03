@@ -1,10 +1,11 @@
 name: terraform-destroy-billables
 
 # The weekend cost button. Destroys ONLY the modules with a standing hourly
-# charge — the ALB (+WAF, ~$22/mo combined) and the API Gateway stack — plus
-# whatever depends on them (the ECS hello service and its task SG get swept in
-# automatically as dependents). Everything free stays untouched: VPC/subnets,
-# Cognito (users + MFA enrollments!), ECR, ECS cluster/task definition/IAM
+# charge — the ALB (+WAF, ~$22/mo combined), the API Gateway stack and the VPC
+# interface endpoints (~$26/mo; M2-3c-2) — plus whatever depends on them (the
+# ECS hello service and its task SG get swept in automatically as dependents).
+# Everything free stays untouched: VPC/subnets, Cognito (users + MFA
+# enrollments!), ECR (pushed images survive), ECS cluster/task definition/IAM
 # roles, CloudWatch logs, budget alarm.
 #
 # HOW TO USE:
@@ -28,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: "Really destroy the billable dev resources (ALB+WAF, API Gateway, ECS service)?"
+        description: "Really destroy the billable dev resources (ALB+WAF, API Gateway, VPC endpoints, ECS service)?"
         type: choice
         options:
           - "no"
@@ -92,13 +93,14 @@ jobs:
       - name: Terraform init
         run: terraform init -input=false
 
-      # Targeted destroy: the two billable modules. Terraform automatically also
+      # Targeted destroy: the billable modules. Terraform automatically also
       # destroys their dependents (ECS service + task SG reference ALB outputs).
       - name: Terraform destroy (billables only)
         run: |
           terraform destroy -input=false -auto-approve -no-color \
             -target=module.alb \
-            -target=module.apigw
+            -target=module.apigw \
+            -target=module.endpoints
 
       - name: Show what remains in the stack
         run: |
