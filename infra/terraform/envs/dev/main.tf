@@ -17,7 +17,9 @@
 #       closed deviation 1. The ALB currently fronts only the nginx hello-world.
 #
 # Still to come: private ECS + VPC endpoints (M2-3c-2), Aurora + real services
-# (M2-4), IoT Core (M2-5).
+# (M2-4), IoT Core (M2-5), and — with the SPA's cloud deployment (post M2-5) —
+# S3+CloudFront in front of everything, at which point the WAF moves from the
+# ALB to CloudFront (AD-19; see the WAF-placement note in the architecture doc).
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}

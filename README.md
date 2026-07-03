@@ -188,6 +188,7 @@ infra/terraform/
 | M2-3c-2 | move ECS to **private** subnets + VPC endpoints | ⏳ next |
 | M2-4 | real services (command/telemetry/fleet) on ECS + Aurora | ⏳ |
 | M2-5 | IoT Core (MQTT backbone, mTLS, Device Shadow) | ⏳ |
+| later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
 
 ### Ingress path (current)
 
