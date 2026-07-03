@@ -9,14 +9,13 @@ variable "vpc_id" {
 }
 
 variable "subnet_ids" {
-  description = "Public subnet ids the task runs in (assign_public_ip = true, no NAT)."
+  description = "Private subnet ids the task runs in (no public IP since M2-3c-2; AWS API access via VPC endpoints)."
   type        = list(string)
 }
 
 variable "container_image" {
-  description = "Container image for the hello-world task."
+  description = "Container image for the hello-world task. Must be pullable WITHOUT internet egress — i.e. our private ECR (via the VPC endpoints); public registries are unreachable from the private subnets."
   type        = string
-  default     = "public.ecr.aws/nginx/nginx:1.27-alpine"
 }
 
 variable "container_port" {
