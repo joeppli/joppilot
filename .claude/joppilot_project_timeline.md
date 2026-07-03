@@ -16,15 +16,15 @@
 | **M2-1** | **Milestone 2:** AWS Migration | Terraform skeleton + GitHub Actions CI/CD (dev account, eu-central-1) | 06.07.2026 - 10.07.2026 |
 | **M2-2** | **Milestone 2:** AWS Migration | VPC (multi-AZ) + ECR + basic VPC endpoints + hello-world deploy to ECS Fargate | 06.07.2026 - 10.07.2026 |
 | **M2-3** | **Milestone 2:** AWS Migration | Cognito (invite-only, MFA, group→role JWT) + API Gateway (WAF + Cognito authorizer) → VPC Link → internal ALB | 06.07.2026 - 10.07.2026 |
-| **M2-4** | **Milestone 2:** AWS Migration | Migrate backend services (command / telemetry / fleet) to ECS Fargate + connect Aurora PostgreSQL (Prisma) | 06.07.2026 - 10.07.2026 |
-| **M2-5** | **Milestone 2:** AWS Migration | IoT Core: topic hierarchy (fleet/{id}/commands-telemetry-status...), X.509 + mTLS provisioning, core Device Shadow fields | 06.07.2026 - 10.07.2026 |
+| **M2-4** | **Milestone 2:** AWS Migration | Migrate backend services (command / telemetry / fleet) to ECS Fargate + connect Aurora PostgreSQL (Prisma). Includes: in-app RBAC guard (`cognito:groups` → role, SEC-03/04) · authorization revocation → immediate session disconnect (SEC-09) · `correlationId` mandatory in the command envelope (SEC-06) | 06.07.2026 - 10.07.2026 |
+| **M2-5** | **Milestone 2:** AWS Migration | IoT Core: topic hierarchy (fleet/{id}/commands-telemetry-status...), X.509 + mTLS provisioning, core Device Shadow fields. Includes: command `signature` becomes mandatory + enforced on the vehicle (ICD §4) | 06.07.2026 - 10.07.2026 |
 | | | | |
 | **M3-1** | **Milestone 3:** CARLA from Cloud | Greengrass V2 edge: VEA component (2nd gate validation, idempotency, ACK/NACK) + CARLA bridge component | 13.07.2026 - 17.07.2026 |
 | **M3-2** | **Milestone 3:** CARLA from Cloud | End-to-end command path via cloud: forward/backward/right/left/throttle/brake works in CARLA | 13.07.2026 - 17.07.2026 |
 | **M3-3** | **Milestone 3:** CARLA from Cloud | E-STOP path (ICD §3): dual message/highest priority; immediate stop in CARLA; dedup with command_id | 13.07.2026 - 17.07.2026 |
 | **M3-4** | **Milestone 3:** CARLA from Cloud | Telemetry: CARLA → Greengrass → IoT Rules → Lambda batch → Aurora partition + live WSS → console | 13.07.2026 - 17.07.2026 |
 | **M3-5** | **Milestone 3:** CARLA from Cloud | Geofence 2-gate (ICD §1): simple polygon, zone type → command class permission (Mode 2 rejection in public) | 13.07.2026 - 17.07.2026 |
-| **M3-6** | **Milestone 3:** CARLA from Cloud | Connection loss scenario: local deadman/safe-stop (zero connectivity, latched) demonstration in CARLA | 13.07.2026 - 17.07.2026 |
+| **M3-6** | **Milestone 3:** CARLA from Cloud | Connection loss scenario: local deadman/safe-stop (zero connectivity, latched) demonstration in CARLA. Includes: offline log buffer on the edge → lossless log sync on reconnect (RES-02) | 13.07.2026 - 17.07.2026 |
 | | | | |
 | **M4-1** | **Milestone 4:** Real Vehicle | B-boundary adapter + clarifying Mode 2 with the ADS team (temporary ROS2/gRPC) | 20.07.2026 - 24.07.2026 |
 | **M4-2** | **Milestone 4:** Real Vehicle | Greengrass edge → real vehicle interface (CAN decode/B-adapter) command bridge | 20.07.2026 - 24.07.2026 |
