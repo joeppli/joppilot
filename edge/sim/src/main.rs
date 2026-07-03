@@ -212,6 +212,13 @@ fn effective_zone(lat: f64, lng: f64, configured_zone: &str) -> String {
 }
 
 /// Mirror of contract `isModeAllowedInZone` / ZONE_MODE_MATRIX (ICD §1).
+///
+/// DUPLICATION WARNING: the matrix intentionally lives twice — here and in
+/// packages/contract/src/index.ts (Rust cannot import the TS module). If the
+/// ICD §1 matrix ever changes, change BOTH and re-run smoke-edge.cjs; a drift
+/// means the two gates disagree on what a zone permits. Planned fix (M3-1,
+/// Greengrass rewrite): emit the matrix as a generated JSON next to the other
+/// contract schemas and load it here at startup, like the schemas already are.
 fn mode_allowed_in_zone(zone: &str, mode: &OperationMode) -> bool {
     match zone {
         "public_approved_route" => matches!(mode, OperationMode::MODE1 | OperationMode::DIAG),

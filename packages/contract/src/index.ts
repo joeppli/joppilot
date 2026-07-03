@@ -28,13 +28,18 @@ export const VehicleStateSchema = z.enum([
 ]);
 
 // ------------------------------------------------------------------
-// ZONE ↔ MODE MATRIX (ICD §1) - single source of truth for both gates
-// `move`  : whether ANY movement-producing command (Mode 1 supervision
-//           or Mode 2 driving) may be executed at all in this zone.
+// ZONE ↔ MODE MATRIX (ICD §1)
 // `mode1` : supervision/assist allowed.
 // `mode2` : direct remote driving allowed.
 // `diagRead` : diagnostic read allowed (always true per ICD).
 // `diagActions` : disruptive diagnostic actions (restart) allowed.
+//
+// DUPLICATION WARNING: the edge safety kernel re-implements this matrix in
+// edge/sim/src/main.rs (`mode_allowed_in_zone` / `diag_disruptive_allowed`)
+// because Rust cannot import TS. If the ICD §1 matrix changes, change BOTH
+// and re-run services/command/test/smoke-edge.cjs. Planned fix (M3-1): emit
+// the matrix as generated JSON alongside the other schemas so the edge loads
+// it at startup instead of hardcoding it.
 // ------------------------------------------------------------------
 export interface ZonePermissions {
   mode1: boolean;
@@ -177,6 +182,9 @@ export const CommandPayloadSchema = z.discriminatedUnion('action', [
 // ------------------------------------------------------------------
 export const CommandEnvelopeSchema = z.object({
   commandId: z.string().uuid(),
+  // TODO(M2-4): make REQUIRED. The WORM/EDR audit chain (SEC-06, LEG-04/05)
+  // correlates records by this id; it needs no crypto, only discipline — Gate 1
+  // must generate it when the console omits it, and every EDR row must carry it.
   correlationId: z.string().uuid().optional(),
   sessionId: z.string().min(1),
   vehicleId: z.string().min(1),
@@ -186,6 +194,12 @@ export const CommandEnvelopeSchema = z.object({
   timestamp: z.number().int().positive(), // UTC epoch ms
   ttlMs: z.number().int().positive(),
   payload: CommandPayloadSchema,
+  // TODO(M2-5): make REQUIRED and enforced. ICD §4 mandates a signature on every
+  // command; it stays optional ONLY because the local prototype has no key
+  // infrastructure yet. When the command channel moves to IoT Core (X.509 mTLS,
+  // M2-5), Gate 1 signs, the edge verifies against the pinned cloud key and
+  // NACKs unsigned/invalid envelopes (SCHEMA_INVALID). Do NOT fake-fill this
+  // field before then — a placeholder signature is worse evidence than none.
   signature: z.string().optional(),
 });
 

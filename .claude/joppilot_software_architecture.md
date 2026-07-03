@@ -213,6 +213,8 @@ The final, authoritative enforcement resides **on the vehicle** (the cloud can e
 
 > **Note - Ingress architecture:** All client traffic (SPA + API) enters through CloudFront. API calls follow the chain CloudFront → API Gateway (WAF + Cognito Authorizer) → VPC Link → **internal ALB** → ECS Fargate. ECS is never publicly exposed; WAF and authorization are consolidated on a single surface.
 
+> **Note - WAF placement (implementation status, M2-3c):** The implemented API Gateway is an **HTTP API** (cheaper than REST, free VPC Link). AWS WAF cannot attach to HTTP APIs (REST-only), so the WebACL is attached to the **internal ALB** one hop behind instead — every request still flows API Gateway → VPC Link → ALB, so the same traffic is inspected. This changes the WAF *attachment point*, not the technology choice: API Gateway stays. **End state:** once CloudFront fronts the stack (with SPA hosting), the WAF moves to **CloudFront**, protecting SPA + API at the edge as AD-19 intends. Switching to a REST API purely to host WAF is rejected (higher cost, NLB-based VPC Link). **CloudFront itself is not yet deployed** — it lands together with the console SPA's cloud deployment (post M2-5); until then API Gateway is the outermost public surface.
+
 ### 6.2 Edge (on-vehicle) layer
 
 | Component | Choice | Rationale |
