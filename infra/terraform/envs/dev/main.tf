@@ -26,10 +26,17 @@ module "network" {
   az_count    = 2
 }
 
-# --- M2-2: container registry ---
+# --- M2-2/M2-4-1: container registries ---
+# hello-world = the M2-2/M2-3 demo image. command/telemetry/fleet are filled by
+# the docker-build workflow (build on PR, push on merge to main).
 module "ecr" {
-  source           = "../../modules/ecr"
-  repository_names = ["joppilot/hello-world"]
+  source = "../../modules/ecr"
+  repository_names = [
+    "joppilot/hello-world",
+    "joppilot/command",
+    "joppilot/telemetry",
+    "joppilot/fleet",
+  ]
 }
 
 # --- M2-3b / M2-3c-1b: internal Application Load Balancer behind API Gateway ---

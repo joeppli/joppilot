@@ -7,13 +7,17 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
 
   onModuleInit() {
-    const isProd = process.env.NODE_ENV === 'production';
+    // TLS is an explicit deployment property (REDIS_TLS=true for ElastiCache
+    // in-transit encryption, SEC-02), NOT implied by NODE_ENV: the production
+    // image also runs against plain local/CI Valkey, where a TLS handshake
+    // just times out silently.
+    const useTls = process.env.REDIS_TLS === 'true';
     this.client = new Redis({
       host: process.env.REDIS_HOST || 'localhost',
       port: Number(process.env.REDIS_PORT) || 6379,
-      tls: isProd ? {} : undefined, // Amazon ElastiCache typically requires TLS in transit
+      tls: useTls ? {} : undefined,
     });
-    this.logger.log(`Connected to Valkey/Redis (${isProd ? 'TLS Enabled' : 'Local'})`);
+    this.logger.log(`Connected to Valkey/Redis (${useTls ? 'TLS enabled' : 'plaintext'})`);
   }
 
   onModuleDestroy() {

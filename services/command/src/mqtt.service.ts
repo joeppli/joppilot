@@ -13,9 +13,12 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit() {
     const isAws = !!process.env.AWS_IOT_ENDPOINT;
-    const host = process.env.AWS_IOT_ENDPOINT || 'localhost';
+    // Plain-MQTT host/port are configurable (MQTT_HOST/MQTT_PORT) so the
+    // containerized service can reach a broker that is not on its own loopback
+    // (docker/ECS — "localhost" only holds for the bare-metal M1 dev setup).
+    const host = process.env.AWS_IOT_ENDPOINT || process.env.MQTT_HOST || 'localhost';
     const protocol = isAws ? 'mqtts' : 'mqtt';
-    const port = isAws ? 8883 : 1883;
+    const port = isAws ? 8883 : Number(process.env.MQTT_PORT) || 1883;
 
     const options: mqtt.IClientOptions = {
       clientId: 'joppilot-cmd-' + Math.random().toString(16).substr(2, 8),

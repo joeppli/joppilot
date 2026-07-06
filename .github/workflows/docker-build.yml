@@ -1,0 +1,74 @@
+name: docker-build
+
+# Builds the three service images from the single parameterized Dockerfile:
+#   - on a PR touching them: build only (the merge gate — image must compile)
+#   - on merge to main: build + push to ECR, tagged `latest` + short git sha
+# Auth = the same OIDC role the terraform workflow uses (no stored keys).
+#
+# First-run note: the ECR repositories are created by the terraform apply that
+# runs on the SAME merge. If this job races it and fails with "repository does
+# not exist", wait for the terraform run to go green, then re-run this workflow
+# (Actions -> docker-build -> Re-run jobs).
+
+on:
+  pull_request:
+    paths:
+      - "services/**"
+      - "packages/contract/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/docker-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/**"
+      - "packages/contract/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/docker-build.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write # request the OIDC token
+  contents: read
+
+# Newer builds supersede older ones for the same ref.
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: eu-central-1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [command, telemetry, fleet]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --build-arg SERVICE=${{ matrix.service }} -t joppilot/${{ matrix.service }}:ci .
+
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ github.event_name != 'pull_request' && vars.AWS_CI_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Push to ECR (main only)
+        if: ${{ github.event_name != 'pull_request' && vars.AWS_CI_ROLE_ARN != '' }}
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="${ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+          IMAGE="$REGISTRY/joppilot/${{ matrix.service }}"
+          docker tag "joppilot/${{ matrix.service }}:ci" "$IMAGE:latest"
+          docker tag "joppilot/${{ matrix.service }}:ci" "$IMAGE:${GITHUB_SHA::7}"
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${GITHUB_SHA::7}"
