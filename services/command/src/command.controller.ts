@@ -1,8 +1,9 @@
-import { Controller, Post, Param, Body, Logger, UnauthorizedException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Controller, Post, Param, Body, Logger, UnauthorizedException, BadRequestException, ForbiddenException, UseGuards } from '@nestjs/common';
 import { MqttService } from './mqtt.service';
 import { SessionService } from './session.service';
 import { PrismaService } from './prisma.service';
 import { ZoneService } from './zone.service';
+import { Roles, RolesGuard } from './roles.guard';
 import {
   CommandEnvelope,
   CommandEnvelopeSchema,
@@ -17,6 +18,7 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 
 @Controller('api/command')
+@UseGuards(RolesGuard)
 export class CommandController {
   private readonly logger = new Logger(CommandController.name);
 
@@ -132,7 +134,9 @@ export class CommandController {
     return this.dispatch(vehicleId, operatorId, token, 'MODE1', { action: 'CLEAR_SAFE_STOP' });
   }
 
-  /** ICD §8: Admin/operator handover — elevates token, old token rejected on vehicle. */
+  /** ICD §8: handover is an ADMINISTRATOR intervention — elevates the token,
+   *  the old token is rejected on the vehicle. Admin-only (RolesGuard). */
+  @Roles('admin')
   @Post(':vehicleId/handover')
   async handover(
     @Param('vehicleId') vehicleId: string,
@@ -150,8 +154,9 @@ export class CommandController {
    * Controlled + logged, not an instant override. Opening Mode 2 on a public
    * route (→ public_test_permit) requires a cantonal test permit; the
    * authorization comes from the permit (id + validity window), never from a
-   * role flipping a rule at runtime.
+   * role flipping a rule at runtime. Admin-only (RolesGuard).
    */
+  @Roles('admin')
   @Post(':vehicleId/zone')
   async setZone(
     @Param('vehicleId') vehicleId: string,

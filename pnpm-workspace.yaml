@@ -3,3 +3,11 @@ packages:
   - 'apps/*'
   - 'services/*'
   - 'edge/*'
+# pnpm >=11 blocks dependency postinstall scripts unless allow-listed. These
+# five are required (Prisma engine download, Nest/esbuild native pieces).
+allowBuilds:
+  '@nestjs/core': true
+  '@prisma/client': true
+  '@prisma/engines': true
+  esbuild: true
+  prisma: true

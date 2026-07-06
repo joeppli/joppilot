@@ -68,32 +68,36 @@ export class PreDepartureService {
   }
 
   async confirm(checklistId: string, operatorId: string) {
-    const result = await this.prisma.preDepartureCheck.updateMany({
-      where: { id: checklistId, status: { not: 'CONFIRMED' } },
-      data: { status: 'CONFIRMED', confirmedBy: operatorId, confirmedAt: new Date() },
+    // LEG-03 invariant: a checklist may NEVER be observable as CONFIRMED while
+    // items are pending or a safety-critical item has failed. Validation
+    // therefore happens BEFORE the confirm write, inside one transaction — a
+    // confirm-then-rollback order would expose a transient CONFIRMED that a
+    // concurrent mission-start could act on.
+    return this.prisma.$transaction(async (tx) => {
+      const record = await tx.preDepartureCheck.findUnique({ where: { id: checklistId } });
+      if (!record) throw new Error('Checklist not found');
+      if (record.status === 'CONFIRMED') throw new Error('Checklist already confirmed');
+
+      const items = record.items as CheckItem[];
+      if (items.some((i) => i.status === 'PENDING')) {
+        throw new Error('Cannot confirm: some items are still PENDING');
+      }
+      // A completed checklist with a critical FAIL is already status FAILED
+      // (updateItem sets it); this guard covers it regardless of stored status.
+      if (items.some((i) => i.safetyCritical && i.status === 'FAIL')) {
+        throw new Error('Cannot confirm: safety-critical item(s) failed');
+      }
+
+      // Guarded write: refuses a double-confirm racing outside this snapshot.
+      const updated = await tx.preDepartureCheck.updateMany({
+        where: { id: checklistId, status: { not: 'CONFIRMED' } },
+        data: { status: 'CONFIRMED', confirmedBy: operatorId, confirmedAt: new Date() },
+      });
+      if (updated.count === 0) throw new Error('Checklist already confirmed');
+
+      this.logger.log(`Checklist ${checklistId} CONFIRMED by ${operatorId}`);
+      return { checklistId, status: 'CONFIRMED' };
     });
-    if (result.count === 0) {
-      const existing = await this.prisma.preDepartureCheck.findUnique({ where: { id: checklistId } });
-      if (!existing) throw new Error('Checklist not found');
-      if (existing.status === 'CONFIRMED') throw new Error('Checklist already confirmed');
-    }
-
-    const record = await this.prisma.preDepartureCheck.findUnique({ where: { id: checklistId } });
-    const items = record!.items as CheckItem[];
-    const anyPending = items.some((i) => i.status === 'PENDING');
-    if (anyPending) {
-      await this.prisma.preDepartureCheck.update({ where: { id: checklistId }, data: { status: 'IN_PROGRESS', confirmedBy: null, confirmedAt: null } });
-      throw new Error('Cannot confirm: some items are still PENDING');
-    }
-
-    const anyCriticalFail = items.some((i) => i.safetyCritical && i.status === 'FAIL');
-    if (anyCriticalFail) {
-      await this.prisma.preDepartureCheck.update({ where: { id: checklistId }, data: { status: 'FAILED', confirmedBy: null, confirmedAt: null } });
-      throw new Error('Cannot confirm: safety-critical item(s) failed');
-    }
-
-    this.logger.log(`Checklist ${checklistId} CONFIRMED by ${operatorId}`);
-    return { checklistId, status: 'CONFIRMED' };
   }
 
   async getChecklist(checklistId: string) {

@@ -33,7 +33,7 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 - **Permit-gated zone change** (ICD §1) — controlled + logged, not an instant override: opening Mode 2 on a public route (→ `public_test_permit`) requires a cantonal permit (`permitId` + validity window); the zone reverts to the safe default when the permit lapses.
 - **Live map** (AD-15) — swisstopo tiles via MapLibre, vehicle position + approved-zone overlay.
 
-> **Not yet** (each now has a slot in the timeline): in-app RBAC enforcement + revocation→disconnect (**M2-4**), command signing enforced (**M2-5**), log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). **Cognito identity + MFA + the API Gateway authorizer are already deployed** — see [Cloud (AWS) — M2](#cloud-aws--m2-migration). Track: `.claude/joppilot_project_timeline.md`.
+> **Not yet** (each now has a slot in the timeline): RBAC identity wiring — the guard + admin-only routes (handover, zone-change) are in place with a dev header-based role (`x-operator-role`); swapping the role source to the verified Cognito `cognito:groups` claim + revocation→disconnect land in **M2-4**. Command signing enforced (**M2-5**), log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). **Cognito identity + MFA + the API Gateway authorizer are already deployed** — see [Cloud (AWS) — M2](#cloud-aws--m2-migration). Track: `.claude/joppilot_project_timeline.md`.
 
 ---
 
