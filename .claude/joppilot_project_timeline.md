@@ -17,13 +17,13 @@
 | **M2-2** | **Milestone 2:** AWS Migration | VPC (multi-AZ) + ECR + basic VPC endpoints + hello-world deploy to ECS Fargate | 06.07.2026 - 10.07.2026 |
 | **M2-3** | **Milestone 2:** AWS Migration | Cognito (invite-only, MFA, group→role JWT) + API Gateway (WAF + Cognito authorizer) → VPC Link → internal ALB | 06.07.2026 - 10.07.2026 |
 | **M2-4** | **Milestone 2:** AWS Migration | Migrate backend services (command / telemetry / fleet) to ECS Fargate + connect Aurora PostgreSQL (Prisma). Includes: in-app RBAC guard (`cognito:groups` → role, SEC-03/04) · authorization revocation → immediate session disconnect (SEC-09) · `correlationId` mandatory in the command envelope (SEC-06) | 06.07.2026 - 10.07.2026 |
-| **M2-5** | **Milestone 2:** AWS Migration | IoT Core: topic hierarchy (fleet/{id}/commands-telemetry-status...), X.509 + mTLS provisioning, core Device Shadow fields. Includes: command `signature` becomes mandatory + enforced on the vehicle (ICD §4) | 06.07.2026 - 10.07.2026 |
+| **M2-5** | **Milestone 2:** AWS Migration | IoT Core: topic hierarchy (fleet/{id}/commands-telemetry-status...), X.509 + mTLS provisioning, core Device Shadow fields. Includes: command `signature` becomes mandatory + enforced on the vehicle (ICD §4) · **zone/permit configuration delivery to the vehicle via Device Shadow** (cloud zone-change now reaches the edge) | 06.07.2026 - 10.07.2026 |
 | | | | |
 | **M3-1** | **Milestone 3:** CARLA from Cloud | Greengrass V2 edge: VEA component (2nd gate validation, idempotency, ACK/NACK) + CARLA bridge component | 13.07.2026 - 17.07.2026 |
 | **M3-2** | **Milestone 3:** CARLA from Cloud | End-to-end command path via cloud: forward/backward/right/left/throttle/brake works in CARLA | 13.07.2026 - 17.07.2026 |
 | **M3-3** | **Milestone 3:** CARLA from Cloud | E-STOP path (ICD §3): dual message/highest priority; immediate stop in CARLA; dedup with command_id | 13.07.2026 - 17.07.2026 |
 | **M3-4** | **Milestone 3:** CARLA from Cloud | Telemetry: CARLA → Greengrass → IoT Rules → Lambda batch → Aurora partition + live WSS → console | 13.07.2026 - 17.07.2026 |
-| **M3-5** | **Milestone 3:** CARLA from Cloud | Geofence 2-gate (ICD §1): simple polygon, zone type → command class permission (Mode 2 rejection in public) | 13.07.2026 - 17.07.2026 |
+| **M3-5** | **Milestone 3:** CARLA from Cloud | Geofence 2-gate (ICD §1): simple polygon, zone type → command class permission (Mode 2 rejection in public). Includes: **edge consumption of the permit + permit fields `validFrom` and speed limit enforced on the vehicle** (ICD §1 conditions) | 13.07.2026 - 17.07.2026 |
 | **M3-6** | **Milestone 3:** CARLA from Cloud | Connection loss scenario: local deadman/safe-stop (zero connectivity, latched) demonstration in CARLA. Includes: offline log buffer on the edge → lossless log sync on reconnect (RES-02) | 13.07.2026 - 17.07.2026 |
 | | | | |
 | **M4-1** | **Milestone 4:** Real Vehicle | B-boundary adapter + clarifying Mode 2 with the ADS team (temporary ROS2/gRPC) | 20.07.2026 - 24.07.2026 |
@@ -51,6 +51,7 @@
   * WORM / EDR
   * S3 Object Lock + Aurora append-only
   * Correlation ID
+  * *Design:* Postgres EDR = **working copy** (queryable); S3 Object Lock = **append-only evidence copy** (immutable). A status transition is written as a **NEW record**, never an in-place update — the audit trail is append-only end to end.
 * **Edge Failsafe v2 (~3d):** 
   * Graduated, speed-sensitive, hysteresis, N-of-M
 * **Remote Update / OTA (~2d):** 
@@ -64,10 +65,13 @@
   * S3 CRR + Aurora replica
 * **Observability (~2d):** 
   * CloudWatch / X-Ray + OpenTelemetry
+* **Internationalization (i18n) [M] (~3d):** 
+  * Localization completion (de-CH / fr-CH / it-CH / en) — **committed**, not optional (LNG-01 / LNG-02 / LNG-04 are [M])
+  * Language switch + locale-aware formatting; console strings externalized
 
 ## September (if needed)
 - Load testing (10→50→100→200 sim vehicles; video session concurrency)  - ~5d
 - Penetration testing + finding remediation  - ~4d
 - revFADP/nDSG privacy package (ROPA, anonymization, retention)  - ~4d
-- i18n completion (de-CH/fr-CH/it-CH/en) + WCAG 2.1 AA audit  - ~3d
+- WCAG 2.1 AA audit  - ~2d
 - Pilot preparation (Track R / sync with cantonal permit)  - ~5d

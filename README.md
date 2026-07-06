@@ -30,16 +30,16 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 - **Mission lifecycle** — `PENDING → PRE_CHECK → ACTIVE → PAUSED → COMPLETED / ABORTED`.
 - **Disruptive-diagnostic deferral** (ICD §1 footnote) — `RESTART_*` / `UPDATE_CONFIG` deferred on a public approved route unless the vehicle is stationary; edge enforces it from live road speed.
 - **Single-operator lock + handover** (ICD §8 / SEC-05) — fencing token in Valkey; a handover elevates the token so the previous operator's commands are rejected on the vehicle.
-- **Permit-gated zone change** (ICD §1) — controlled + logged, not an instant override: opening Mode 2 on a public route (→ `public_test_permit`) requires a cantonal permit (`permitId` + validity window); the zone reverts to the safe default when the permit lapses.
+- **Permit-gated zone change** (ICD §1) — **cloud side only (Gate 1)** so far: opening Mode 2 on a public route (→ `public_test_permit`) is controlled + logged, not an instant override — it requires a cantonal permit (`permitId` + validity window) and reverts to the safe default when the permit lapses. **Not yet end-to-end:** today the cloud zone-change does **not** reach the vehicle — the edge runs from its own `EDGE_ZONE_TYPE` env, so a cloud override is ignored on the vehicle. Delivery to the edge (Device Shadow) lands in **M2-5**, and edge permit consumption (`validFrom`, speed limit) in **M3-5**. The contradiction is fail-safe (the edge stays on its stricter local zone), but the feature is not yet wired through.
 - **Live map** (AD-15) — swisstopo tiles via MapLibre, vehicle position + approved-zone overlay.
 
-> **Not yet** (each now has a slot in the timeline): RBAC identity wiring — the guard + admin-only routes (handover, zone-change) are in place with a dev header-based role (`x-operator-role`); swapping the role source to the verified Cognito `cognito:groups` claim + revocation→disconnect land in **M2-4**. Command signing enforced (**M2-5**), log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). **Cognito identity + MFA + the API Gateway authorizer are already deployed** — see [Cloud (AWS) — M2](#cloud-aws--m2-migration). Track: `.claude/joppilot_project_timeline.md`.
+> **Not yet** (each now has a slot in the timeline): RBAC identity wiring — the guard + admin-only routes (handover, zone-change) are in place with a dev header-based role (`x-operator-role`); swapping the role source to the verified Cognito `cognito:groups` claim + revocation→disconnect land in **M2-4-3** (same PR that wires command to API Gateway, since the `x-operator-role` header is spoofable behind a proxy). Command signing enforced (**M2-5**), log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). **Cognito identity + MFA + the API Gateway authorizer are already deployed** — see [Cloud (AWS) — M2](#cloud-aws--m2-migration). Track: `.claude/joppilot_project_timeline.md`.
 
 ---
 
 ## Prerequisites
 
-- **Node 18** (Node 20 is fine; pnpm's "wanted node 20" is just a warning)
+- **Node ≥20** (`package.json` `engines` requires `>=20`; the Docker image is `node:22-alpine`)
 - **pnpm** — `npm install -g pnpm` or `corepack enable`
   ⚠️ Use **pnpm only**. Do **not** run `npm install` in this repo — it corrupts the pnpm store.
 - **Docker** + Docker Compose (for postgres / mosquitto / valkey)
@@ -186,7 +186,9 @@ infra/terraform/
 | M2-3c-1a | HTTP API Gateway + Cognito JWT authorizer + VPC Link + WAF | ✅ |
 | M2-3c-1b | ALB → **internal** (API Gateway is now the only public entry) | ✅ |
 | M2-3c-2 | ECS in **private** subnets, no public IP; VPC endpoints (ECR/logs/S3); image from our ECR | ✅ |
-| M2-4 | real services (command/telemetry/fleet) on ECS + Aurora | ⏳ next |
+| M2-4-1 | Containerize the 3 services (single-arg `Dockerfile`, `node:22-alpine`, `pnpm deploy`) + CI build/push to 3 new ECR repos (`:latest`+`:sha`) | ✅ |
+| M2-4-2 | Aurora Serverless v2 (min 0 ACU auto-pause, KMS) + Secrets Manager + migration path | ⏳ next |
+| M2-4-3 | real services (command/telemetry/fleet) on ECS + RBAC to verified `cognito:groups` | ⏳ |
 | M2-5 | IoT Core (MQTT backbone, mTLS, Device Shadow) | ⏳ |
 | later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
 
