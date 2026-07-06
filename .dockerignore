@@ -1,0 +1,12 @@
+# Keep the docker build context small + deterministic: dependencies and build
+# outputs are produced INSIDE the image, never copied from the host.
+**/node_modules
+**/dist
+**/generated
+**/.env
+**/*.log
+.git
+.claude
+.github
+infra
+edge
