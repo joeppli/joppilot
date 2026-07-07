@@ -55,7 +55,11 @@ variable "seconds_until_auto_pause" {
 }
 
 variable "backup_retention_days" {
-  description = "Automated backup retention in days"
+  # AWS FREE-PLAN LIMIT: accounts on the free account plan cap RDS backup
+  # retention at 1 day (CreateDBCluster fails with FreeTierRestrictionError
+  # above that). Raise to 7+ when the account moves to a paid plan — dev data
+  # is reproducible from migrations, so 1 day is acceptable for now.
+  description = "Automated backup retention in days (max 1 on the AWS free account plan)"
   type        = number
-  default     = 7
+  default     = 1
 }
