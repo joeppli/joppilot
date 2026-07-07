@@ -66,33 +66,14 @@ docker compose -f infra/docker-compose.yml up -d
 # 4. Build the contract first (other workspaces import it; edge reads its schemas)
 pnpm --filter @joppilot/contract build      # or: cd packages/contract && pnpm build
 
-# 5. Generate each Prisma client + create the Postgres tables.
-#    NOTE: command and fleet share one database with separate schemas, so DON'T run
-#    `prisma db push` (it would drop the other service's tables). Generate the clients,
-#    then create tables with the SQL helper below.
-cd services/command && pnpm exec prisma generate && cd ../..
-cd services/fleet   && pnpm exec prisma generate && cd ../..
-
-docker exec -i joppilot_postgres psql -U joppilot -d joppilot_db <<'SQL'
-CREATE TABLE IF NOT EXISTS "EventDataRecord" (
-  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-  "commandId" TEXT UNIQUE NOT NULL, "vehicleId" TEXT NOT NULL, issuer TEXT NOT NULL,
-  action TEXT NOT NULL, status TEXT NOT NULL, details JSONB,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
-CREATE TABLE IF NOT EXISTS "PreDepartureCheck" (
-  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-  "vehicleId" TEXT NOT NULL, status TEXT NOT NULL, items JSONB NOT NULL,
-  "confirmedBy" TEXT, "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "confirmedAt" TIMESTAMP(3));
-CREATE TABLE IF NOT EXISTS "Mission" (
-  id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-  "vehicleId" TEXT NOT NULL, "routeId" TEXT, status TEXT NOT NULL,
-  "checklistId" TEXT UNIQUE REFERENCES "PreDepartureCheck"(id),
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "startedAt" TIMESTAMP(3), "completedAt" TIMESTAMP(3));
-SQL
+# 5. Generate each Prisma client + apply the committed migrations (M2-4-2).
+#    command and fleet share one database with SEPARATE Postgres schemas
+#    (?schema=command / ?schema=fleet in each .env), each with its own
+#    migration history — `migrate deploy` creates the schema on first run.
+cd services/command && pnpm exec prisma generate && pnpm exec prisma migrate deploy && cd ../..
+cd services/fleet   && pnpm exec prisma generate && pnpm exec prisma migrate deploy && cd ../..
 # (telemetry_samples is auto-created by the telemetry service on boot — no step needed)
+# (in the docker images the entrypoint runs `migrate deploy` automatically on start)
 ```
 
 > The package name in step 4 may differ — check `packages/contract/package.json`'s `name`.
@@ -145,7 +126,7 @@ node services/command/test/smoke-zone.cjs
 # Fleet & mission + pre-departure check — expect 20/20 pass
 #   (clears Mission + PreDepartureCheck rows first; safe in local dev)
 docker exec joppilot_postgres psql -U joppilot -d joppilot_db \
-  -c 'DELETE FROM "Mission"; DELETE FROM "PreDepartureCheck";'
+  -c 'DELETE FROM fleet."Mission"; DELETE FROM fleet."PreDepartureCheck";'
 node services/fleet/test/smoke-fleet.cjs
 
 # Contract unit tests
@@ -175,6 +156,8 @@ infra/terraform/
   modules/alb/       # Application Load Balancer + target group + WAF
   modules/cognito/   # user pool (invite-only, MFA/TOTP), admin/operator groups
   modules/apigw/     # HTTP API + Cognito JWT authorizer + VPC Link
+  modules/endpoints/ # interface VPC endpoints (ECR/logs/Secrets Manager) + S3 gateway
+  modules/aurora/    # Aurora Serverless v2 (STATEFUL — never in the destroy button)
   bootstrap/         # one-time: S3 state bucket, DynamoDB lock, OIDC CI role
 ```
 
@@ -190,7 +173,7 @@ infra/terraform/
 | M2-3c-1b | ALB → **internal** (API Gateway is now the only public entry) | ✅ |
 | M2-3c-2 | ECS in **private** subnets, no public IP; VPC endpoints (ECR/logs/S3); image from our ECR | ✅ |
 | M2-4-1 | Containerize the 3 services (single-arg `Dockerfile`, `node:22-alpine`, `pnpm deploy`) + CI build/push to 3 new ECR repos (`:latest`+`:sha`) | ✅ |
-| M2-4-2 | Aurora Serverless v2 (min 0 ACU auto-pause, KMS) + Secrets Manager + migration path | ⏳ next |
+| M2-4-2 | Aurora Serverless v2 (min 0 ACU auto-pause, KMS CMK, deletion-protected) + RDS-managed secret + `secretsmanager` VPC endpoint + Prisma migrations per schema, applied by the container entrypoint | ✅ |
 | M2-4-3 | real services (command/telemetry/fleet) on ECS + RBAC to verified `cognito:groups` | ⏳ |
 | M2-5 | IoT Core (MQTT backbone, mTLS, Device Shadow) | ⏳ |
 | later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
@@ -243,7 +226,7 @@ aws ecs update-service --cluster joppilot-dev-cluster \
 ```
 
 Standing costs that do **not** scale to zero: **ALB (~$16/mo)** + **WAF (~$6/mo)** +
-**3 interface VPC endpoints (~$26/mo, single-AZ)** ≈ **$48/mo total**. For those there
+**4 interface VPC endpoints (~$35/mo, single-AZ)** ≈ **$57/mo total**. For those there
 is a one-click **destroy button**: Actions → `terraform-destroy-billables` → Run
 workflow → set confirm to `destroy-billables`. It destroys only the billable pieces
 (ALB+WAF, API Gateway, VPC endpoints, ECS service) and keeps everything free — VPC,
@@ -251,6 +234,14 @@ workflow → set confirm to `destroy-billables`. It destroys only the billable p
 Restore: run the `terraform` workflow manually (or merge any infra PR — apply rebuilds
 it); the service comes back with 0 tasks and `api_endpoint` gets a new URL. An
 `$80/mo` AWS Budgets alarm emails at 50 / 80 / 100 %.
+
+**Aurora is deliberately NOT in the destroy button** (stateful — permanent rule):
+its saving comes from **Serverless v2 auto-pause** instead. With min 0 ACU the
+cluster suspends after 5 idle minutes and bills **storage only** (pennies at dev
+size); the first connection after a pause takes ~15 s to resume — a slow first
+request after idle is normal, not an outage. Running compute is ~$0.08/h at
+0.5 ACU, and the cluster's KMS key adds ~$1/mo. `deletion_protection` is on: even
+a manual `terraform destroy` refuses the cluster until the flag is flipped.
 
 ---
 
@@ -265,9 +256,12 @@ it); the service comes back with 0 tasks and `api_endpoint` gets a new URL. An
   certs are git-ignored, keep them out of the repo.
 - Telemetry persistence uses **raw batched Postgres inserts** (architecture AD-14), not
   Prisma. **Prisma** is used by `services/command` (EDR/audit) and `services/fleet`
-  (missions + checklists). Both share one database but **separate schemas**, and each
-  generates its client into its own `generated/prisma/` — so never `prisma db push`
-  (it drops the other service's tables); create tables via SQL (see Quick start step 5).
+  (missions + checklists). Both share one database but **separate Postgres schemas**
+  (`?schema=command` / `?schema=fleet` in the DSN), each with its own committed
+  migration history under `prisma/migrations/` — schema changes go through
+  `prisma migrate dev` (creates a new migration) and are applied with
+  `prisma migrate deploy` (the docker entrypoint does this automatically). Never
+  `prisma db push` — it bypasses the migration history.
 - **NestJS services bind to `0.0.0.0`** (`app.listen(port, '0.0.0.0')`). On WSL2 the
   default IPv6-only bind makes the browser fail with "failed to fetch" — keep the explicit
   bind for any new service.

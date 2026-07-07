@@ -10,7 +10,7 @@
 # endpoints, not a NAT gateway. No interim deviations remain — the real services
 # (M2-4) may now be placed behind this stack.
 #
-# Still to come: Aurora + real services (M2-4), IoT Core (M2-5), and — with the
+# Still to come: real services on ECS (M2-4-3), IoT Core (M2-5), and — with the
 # SPA's cloud deployment (post M2-5) — S3+CloudFront in front of everything, at
 # which point the WAF moves from the ALB to CloudFront (AD-19; see the
 # WAF-placement note in the architecture doc).
@@ -93,6 +93,20 @@ module "ecs_hello" {
   desired_count         = var.hello_world_desired_count
   alb_security_group_id = module.alb.security_group_id
   target_group_arn      = module.alb.target_group_arn
+}
+
+# --- M2-4-2: Aurora Serverless v2 — the relational database (AD-14) ---
+# STATEFUL — never a destroy-billables target (permanent rule). Idle cost is
+# handled by auto-pause instead: min 0 ACU suspends compute after 5 idle
+# minutes, leaving storage-only pennies. deletion_protection guards the rest.
+# Password lives in an RDS-managed Secrets Manager secret (free); private
+# tasks fetch it through the secretsmanager VPC endpoint (module above).
+module "aurora" {
+  source      = "../../modules/aurora"
+  name_prefix = "joppilot-${var.environment}"
+  vpc_id      = module.network.vpc_id
+  vpc_cidr    = module.network.vpc_cidr
+  subnet_ids  = module.network.private_subnet_ids
 }
 
 # --- M2-3a: Cognito identity + MFA + RBAC groups (free tier, no standing cost) ---

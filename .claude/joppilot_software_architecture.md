@@ -241,6 +241,8 @@ The final, authoritative enforcement resides **on the vehicle** (the cloud can e
 
 **Backend framework:** **NestJS** (TypeScript). Modular architecture, built-in WebSocket/MQTT support, automatic OpenAPI 3.1 generation (decorator-based), dependency injection, Guard/Interceptor pattern (RBAC, fencing token validation). **Prisma** is used as the ORM for relational/business data.
 
+> **Note - Migration execution (implementation status, M2-4-2):** command and fleet share **one Aurora database with separate Postgres schemas** (`?schema=command` / `?schema=fleet`); each service owns its committed migration history, and the **container entrypoint runs `prisma migrate deploy` against its own schema** before the app starts (`migrate deploy` takes an advisory lock, so concurrently starting tasks cannot collide; a failed migration keeps the new task from starting while the rolling deploy keeps the old version alive). **Accepted simplification:** the runtime DB identity holds DDL rights — there is no migrate/runtime role split yet. **Closure condition:** when DB users are split into least-privilege roles — at latest before real personal data (nDSG) flows — migration execution moves to a CI-driven one-off ECS task.
+
 > **Note - Prisma limitations:** (1) **Telemetry:** Prisma does not manage native PostgreSQL partitioning and adds overhead on high-frequency writes; the telemetry ingest hot-path uses pg_partman + raw/batched inserts (or IoT Rules → Firehose/Aurora), not Prisma. (2) **Booking (future):** PostgreSQL's `EXCLUDE USING gist` constraint (double-booking prevention) is not natively supported in Prisma; if booking is brought into scope, this must be added via a raw SQL migration.
 
 ## 7. Third-Party / External Dependencies

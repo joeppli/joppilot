@@ -46,5 +46,8 @@ RUN apk add --no-cache openssl
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /out .
+# Startup script: assembles DATABASE_URL from DB_* env if needed, then runs
+# `prisma migrate deploy` (services with a Prisma schema) before the app.
+COPY --chmod=0755 docker-entrypoint.sh /app/docker-entrypoint.sh
 USER node
-CMD ["node", "dist/main"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]

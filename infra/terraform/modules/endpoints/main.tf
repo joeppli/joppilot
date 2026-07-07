@@ -12,12 +12,16 @@
 # The set a Fargate task needs to pull a private ECR image and ship awslogs:
 #   ecr.api (auth) + ecr.dkr (registry) + logs (interface, ~$8-9/mo each)
 #   + s3 gateway (image layers live in S3 — FREE).
-# Secrets Manager / KMS / STS endpoints are deferred to M2-4 (no secrets yet).
+# M2-4-2 adds secretsmanager (~$8-9/mo): private tasks fetch the Aurora
+# credentials (the RDS-managed master secret) without an internet route. No KMS
+# endpoint needed for that — Secrets Manager decrypts server-side; the caller
+# only ever talks to the secretsmanager API. KMS / STS endpoints remain
+# deferred until something inside the VPC calls them directly.
 # Note: public ECR (public.ecr.aws) has NO endpoint — hence the image moves to
 # our private ECR repository in this step.
 #
-# COST posture (dev): interface endpoints sit in a SINGLE AZ (~$26/mo total
-# instead of ~$52 for two) — an AZ outage would break image pulls/logs, which is
+# COST posture (dev): interface endpoints sit in a SINGLE AZ (~$35/mo total
+# instead of ~$70 for two) — an AZ outage would break image pulls/logs, which is
 # acceptable in dev; production places one per AZ. The destroy-billables
 # workflow targets this module (independent standing cost).
 
@@ -46,7 +50,7 @@ resource "aws_security_group" "endpoints" {
 
 locals {
   # Interface-type endpoints to create (each bills hourly per AZ).
-  interface_services = toset(["ecr.api", "ecr.dkr", "logs"])
+  interface_services = toset(["ecr.api", "ecr.dkr", "logs", "secretsmanager"])
 }
 
 resource "aws_vpc_endpoint" "interface" {
