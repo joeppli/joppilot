@@ -174,13 +174,24 @@ export class CommandController {
 
     const from = this.zoneService.getZone(vehicleId);
 
-    // ICD §1: Mode 2 on a public route is permit-based only.
-    if (zone === 'public_test_permit' && !permitId) {
-      await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'REJECTED', { reason: 'PERMIT_REQUIRED', from, to: zone });
-      throw new ForbiddenException({
-        reason: 'PERMIT_REQUIRED',
-        details: 'Opening Mode 2 on a public route requires a cantonal test permit (permitId + validUntil).',
-      });
+    // ICD §1: Mode 2 on a public route is permit-based AND time-limited —
+    // without a validity window the zone would never fall back to the safe
+    // default, i.e. Mode 2 open indefinitely on a public road.
+    if (zone === 'public_test_permit') {
+      if (!permitId || typeof validUntil !== 'number') {
+        await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'REJECTED', { reason: 'PERMIT_REQUIRED', from, to: zone, permitId, validUntil });
+        throw new ForbiddenException({
+          reason: 'PERMIT_REQUIRED',
+          details: 'Opening Mode 2 on a public route requires a cantonal test permit (permitId + validUntil).',
+        });
+      }
+      if (validUntil <= Date.now()) {
+        await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'REJECTED', { reason: 'PERMIT_EXPIRED', from, to: zone, permitId, validUntil });
+        throw new ForbiddenException({
+          reason: 'PERMIT_EXPIRED',
+          details: `Permit validity window ends in the past (validUntil=${validUntil}).`,
+        });
+      }
     }
 
     const permit = permitId ? { permitId, changedBy: issuer, reason, validUntil } : undefined;
