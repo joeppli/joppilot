@@ -4,7 +4,7 @@ variable "name_prefix" {
 }
 
 variable "vpc_id" {
-  description = "VPC to place the cluster in"
+  description = "VPC to place the instance in"
   type        = string
 }
 
@@ -19,9 +19,21 @@ variable "subnet_ids" {
 }
 
 variable "engine_version" {
-  description = "Aurora PostgreSQL engine version (must be >= 15.7 / 16.3 for min 0 ACU auto-pause)"
+  description = "RDS PostgreSQL engine version"
   type        = string
   default     = "16.6"
+}
+
+variable "instance_class" {
+  description = "Instance class (db.t4g.micro / db.t3.micro are inside the free-plan allowance)"
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "allocated_storage_gb" {
+  description = "Allocated storage in GB (free-plan allowance: 20)"
+  type        = number
+  default     = 20
 }
 
 variable "database_name" {
@@ -36,29 +48,11 @@ variable "master_username" {
   default     = "joppilot_admin"
 }
 
-variable "min_acu" {
-  description = "Serverless v2 minimum capacity. 0 enables auto-pause (idle = storage cost only)"
-  type        = number
-  default     = 0
-}
-
-variable "max_acu" {
-  description = "Serverless v2 maximum capacity (1 ACU covers the ~10-vehicle dev scale, OPS-01)"
-  type        = number
-  default     = 1
-}
-
-variable "seconds_until_auto_pause" {
-  description = "Idle seconds (no connections) before the cluster auto-pauses (300-86400)"
-  type        = number
-  default     = 300
-}
-
 variable "backup_retention_days" {
   # AWS FREE-PLAN LIMIT: accounts on the free account plan cap RDS backup
-  # retention at 1 day (CreateDBCluster fails with FreeTierRestrictionError
-  # above that). Raise to 7+ when the account moves to a paid plan — dev data
-  # is reproducible from migrations, so 1 day is acceptable for now.
+  # retention at 1 day (create fails with FreeTierRestrictionError above
+  # that). Raise to 7+ when the account moves to a paid plan — dev data is
+  # reproducible from migrations, so 1 day is acceptable for now.
   description = "Automated backup retention in days (max 1 on the AWS free account plan)"
   type        = number
   default     = 1

@@ -157,7 +157,7 @@ infra/terraform/
   modules/cognito/   # user pool (invite-only, MFA/TOTP), admin/operator groups
   modules/apigw/     # HTTP API + Cognito JWT authorizer + VPC Link
   modules/endpoints/ # interface VPC endpoints (ECR/logs/Secrets Manager) + S3 gateway
-  modules/aurora/    # Aurora Serverless v2 (STATEFUL — never in the destroy button)
+  modules/rds/       # RDS PostgreSQL (STATEFUL — never in the destroy button; interim for AD-14)
   bootstrap/         # one-time: S3 state bucket, DynamoDB lock, OIDC CI role
 ```
 
@@ -173,7 +173,7 @@ infra/terraform/
 | M2-3c-1b | ALB → **internal** (API Gateway is now the only public entry) | ✅ |
 | M2-3c-2 | ECS in **private** subnets, no public IP; VPC endpoints (ECR/logs/S3); image from our ECR | ✅ |
 | M2-4-1 | Containerize the 3 services (single-arg `Dockerfile`, `node:22-alpine`, `pnpm deploy`) + CI build/push to 3 new ECR repos (`:latest`+`:sha`) | ✅ |
-| M2-4-2 | Aurora Serverless v2 (min 0 ACU auto-pause, KMS CMK, deletion-protected) + RDS-managed secret + `secretsmanager` VPC endpoint + Prisma migrations per schema, applied by the container entrypoint | ✅ |
+| M2-4-2 | RDS PostgreSQL db.t4g.micro in-VPC (KMS CMK, deletion-protected; **interim for AD-14** — the free account plan only allows Aurora as a public VPC-less "express" cluster, swaps back to Aurora Serverless v2 on plan upgrade) + RDS-managed secret + `secretsmanager` VPC endpoint + Prisma migrations per schema, applied by the container entrypoint | ✅ |
 | M2-4-3 | real services (command/telemetry/fleet) on ECS + RBAC to verified `cognito:groups` | ⏳ |
 | M2-5 | IoT Core (MQTT backbone, mTLS, Device Shadow) | ⏳ |
 | later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
@@ -235,13 +235,15 @@ Restore: run the `terraform` workflow manually (or merge any infra PR — apply 
 it); the service comes back with 0 tasks and `api_endpoint` gets a new URL. An
 `$80/mo` AWS Budgets alarm emails at 50 / 80 / 100 %.
 
-**Aurora is deliberately NOT in the destroy button** (stateful — permanent rule):
-its saving comes from **Serverless v2 auto-pause** instead. With min 0 ACU the
-cluster suspends after 5 idle minutes and bills **storage only** (pennies at dev
-size); the first connection after a pause takes ~15 s to resume — a slow first
-request after idle is normal, not an outage. Running compute is ~$0.08/h at
-0.5 ACU, and the cluster's KMS key adds ~$1/mo. `deletion_protection` is on: even
-a manual `terraform destroy` refuses the cluster until the flag is flipped.
+**The database is deliberately NOT in the destroy button** (stateful — permanent
+rule). It also costs (almost) nothing to keep: **db.t4g.micro + 20 GB sits inside
+the free plan's RDS allowance** (750 h/mo); only its KMS key adds ~$1/mo. If it
+ever needs to stop, `aws rds stop-db-instance --db-instance-identifier
+joppilot-dev-db` pauses it for up to 7 days (AWS restarts it after that).
+`deletion_protection` is on: even a manual `terraform destroy` refuses the
+instance until the flag is flipped. (Aurora Serverless v2 returns when the
+account moves off the free plan — see the AD-14 deviation note in the
+architecture doc.)
 
 ---
 

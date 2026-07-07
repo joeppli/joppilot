@@ -14,7 +14,7 @@ infra/terraform/
   bootstrap/        # run ONCE by hand (state backend + GitHub OIDC + CI role) — see bootstrap/README.md
   envs/
     dev/            # the dev environment root module (terraform runs here)
-  modules/          # reusable building blocks: network, ecr, ecs, alb, cognito, apigw, endpoints, aurora
+  modules/          # reusable building blocks: network, ecr, ecs, alb, cognito, apigw, endpoints, rds
 ```
 
 ## First-time setup
@@ -31,11 +31,13 @@ The deployed dev stack: VPC (multi-AZ public/private subnets) + ECR + ECS Fargat
 hello-world (nginx from our private ECR, **private subnets, no public IP**) +
 VPC endpoints (ecr.api / ecr.dkr / logs / secretsmanager + free S3 gateway) +
 Cognito (invite-only, MFA/TOTP, `admin`/`operator` groups) + HTTP API Gateway
-(Cognito JWT authorizer → VPC Link) + **internal ALB** (with WAF) + **Aurora
-Serverless v2** (PostgreSQL, min 0 ACU auto-pause, KMS CMK, deletion-protected,
-master password in an RDS-managed Secrets Manager secret). API Gateway is the
-only public entry point; no interim deviations remain (see the header of
-[`envs/dev/main.tf`](envs/dev/main.tf)). Still to come:
+(Cognito JWT authorizer → VPC Link) + **internal ALB** (with WAF) + **RDS
+PostgreSQL** (free-tier db.t4g.micro in the private subnets, KMS CMK,
+deletion-protected, master password in an RDS-managed Secrets Manager secret;
+**interim for AD-14** — swaps back to Aurora Serverless v2 when the account
+leaves the AWS free plan, which only allows Aurora as a public VPC-less
+"express" cluster). API Gateway is the only public entry point (see the header
+of [`envs/dev/main.tf`](envs/dev/main.tf)). Still to come:
 
 - **M2-4-3** — real services (command/telemetry/fleet) on Fargate wired to
   Aurora + API Gateway (RBAC to verified `cognito:groups`).
@@ -57,9 +59,9 @@ docker push 325657596328.dkr.ecr.eu-central-1.amazonaws.com/joppilot/hello-world
 **Cost control:** the billable pieces (ALB+WAF+VPC endpoints, ~$57/mo) tear down
 with the `terraform-destroy-billables` workflow (Actions tab) and come back by
 re-running the `terraform` workflow — details in the root README's cost-control
-section. Pushed ECR images survive the destroy. **Aurora is never a destroy
-target** (stateful — permanent rule): min 0 ACU auto-pause already reduces the
-idle cluster to storage-only pennies, and `deletion_protection` blocks deletion.
+section. Pushed ECR images survive the destroy. **The database is never a
+destroy target** (stateful — permanent rule): db.t4g.micro sits inside the
+free-plan RDS allowance anyway, and `deletion_protection` blocks deletion.
 
 ## Running locally (optional)
 

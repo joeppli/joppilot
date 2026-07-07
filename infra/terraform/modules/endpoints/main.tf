@@ -12,7 +12,7 @@
 # The set a Fargate task needs to pull a private ECR image and ship awslogs:
 #   ecr.api (auth) + ecr.dkr (registry) + logs (interface, ~$8-9/mo each)
 #   + s3 gateway (image layers live in S3 — FREE).
-# M2-4-2 adds secretsmanager (~$8-9/mo): private tasks fetch the Aurora
+# M2-4-2 adds secretsmanager (~$8-9/mo): private tasks fetch the database
 # credentials (the RDS-managed master secret) without an internet route. No KMS
 # endpoint needed for that — Secrets Manager decrypts server-side; the caller
 # only ever talks to the secretsmanager API. KMS / STS endpoints remain
