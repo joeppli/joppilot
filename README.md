@@ -263,7 +263,10 @@ architecture doc.)
   migration history under `prisma/migrations/` — schema changes go through
   `prisma migrate dev` (creates a new migration) and are applied with
   `prisma migrate deploy` (the docker entrypoint does this automatically). Never
-  `prisma db push` — it bypasses the migration history.
+  `prisma db push` — it bypasses the migration history. Telemetry's raw writer
+  deliberately stays in the **default `public` schema** (the `pg` driver ignores
+  the `?schema=` DSN parameter) — revisit if/when telemetry moves to pg_partman
+  partitioning (August).
 - **NestJS services bind to `0.0.0.0`** (`app.listen(port, '0.0.0.0')`). On WSL2 the
   default IPv6-only bind makes the browser fail with "failed to fetch" — keep the explicit
   bind for any new service.

@@ -349,3 +349,22 @@ The binding current scale and camera/vehicle targets are defined in the **constr
 | OP-8 | Whether booking (rental) will be built | Product team (SCP-05) |
 | OP-9 | **ADS → Joppilot route feed:** planned route + ETA + static map components (format, cadence) over the B-boundary; confirm the ADS can publish a clean feed | ADS + Joppilot |
 | OP-10 | **Fallback dispatch ETA** when the ADS route feed is unavailable (e.g. straight-line × factor) so sequencing does not stall | Engineering |
+
+### 11.3 Accepted deviations & deferred hardening — living register
+
+> Single audit entry point: every DELIBERATE gap between this document's target state and what is deployed, each with the trigger that closes it. Detailed rationale lives in the note referenced per row. A new deviation is not accepted until it has a row here; a closed row is deleted, not struck through. (Scheduled *features* — WORM/EDR evidence copy, dual-path E-STOP, Client VPN, mTLS/signature enforcement, i18n, DR — are tracked in the timeline, not here.)
+
+| # | Deviation / deferral | Target state (this doc) | Closure trigger | Detail |
+|---|---|---|---|---|
+| DEV-1 | WAF attached to the internal ALB | WAF at the edge on CloudFront (AD-19) | CloudFront lands with the SPA cloud deployment (post M2-5) | §6.1 WAF-placement note |
+| DEV-2 | In-VPC hop (API GW → VPC Link → ALB → ECS) is plain HTTP | All transit encrypted (SEC-02) | Before real personal data (nDSG) or live vehicle command traffic; at latest the CloudFront + custom-domain phase | §6.1 in-VPC transport note |
+| DEV-3 | Interim RDS PostgreSQL db.t4g.micro instead of Aurora | Aurora PostgreSQL (AD-14) | AWS account leaves the free plan (at latest when the Zurich DR replica is needed); Aurora module preserved in git history | §6 DB-engine note |
+| DEV-4 | Backup retention 1 day (free-plan cap) | Defined, enforceable retention (DAT-06) | Same as DEV-3 — raise to 7+ on plan upgrade; full retention regime lands with the August data-infra work | rds module variable comment |
+| DEV-5 | Migrations run in the container entrypoint with the master (DDL) identity | Least-privilege runtime DB users (SEC-04 spirit) | DB users split into migrate/runtime roles — at latest before real personal data; then move to a CI one-off ECS task | §6 migration-execution note |
+| DEV-6 | DB security group admits the whole VPC CIDR on 5432 | Least privilege (SEC-04) | M2-4-3: tighten ingress to the service task SGs | rds module comment |
+| DEV-7 | RBAC role read from the spoofable `x-operator-role` header (dev only; services not yet publicly reachable) | Verified `cognito:groups` claim (SEC-03/04) | M2-4-3, in the SAME PR that wires command behind API Gateway | roles.guard.ts comment |
+| DEV-8 | Cloud zone/permit changes do not reach the vehicle (edge runs its own `EDGE_ZONE_TYPE`; fail-safe direction) | Zone config distributed to and enforced on the vehicle (ICD §1) | Device Shadow delivery in M2-5; edge permit consumption (validFrom, speed limit) in M3-5 | README status section |
+| DEV-9 | Telemetry table lives in the default `public` schema (raw `pg` ignores `?schema=`) | One schema per service owner | Revisit with pg_partman partitioning (August); acceptable while telemetry owns a single table | README Prisma note |
+| DEV-10 | Interface VPC endpoints in a single AZ | Multi-AZ posture of the rest of the stack | Production hardening — one endpoint per AZ | endpoints module comment |
+| DEV-11 | In-memory zone registry + per-instance deadman timers in the command service (edge watchdog remains the authoritative failsafe) | DB + Valkey-backed shared state (AD-15) | M2-4-3+, before the command service scales past one task | zone.service.ts comment / audit-2 |
+| DEV-12 | AWS account on the free plan (walls already hit: Aurora express-only, 1-day backups) | Unrestricted account | Decision point at M2-5 (IoT Core) and August (KVS WebRTC): verify free-plan availability BEFORE building; upgrade if blocked | m2 memory / audit-4 |

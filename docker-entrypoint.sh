@@ -19,7 +19,17 @@
 set -e
 
 if [ -z "$DATABASE_URL" ] && [ -n "$DB_HOST" ]; then
+  # Fail LOUDLY on a partial DB_* set: a missing DB_SCHEMA would otherwise
+  # produce "?schema=undefined" and Prisma would silently create and use a
+  # Postgres schema literally named "undefined". Telemetry sets DB_SCHEMA
+  # too (public) even though its pg driver ignores the parameter — one
+  # contract for all three images.
   DATABASE_URL="$(node -e '
+    const missing = ["DB_USERNAME", "DB_PASSWORD", "DB_NAME", "DB_SCHEMA"].filter((k) => !process.env[k]);
+    if (missing.length) {
+      console.error(`FATAL: DB_HOST is set but ${missing.join(", ")} missing - refusing to assemble a broken DATABASE_URL`);
+      process.exit(1);
+    }
     const e = encodeURIComponent;
     const { DB_USERNAME, DB_PASSWORD, DB_HOST, DB_PORT = "5432", DB_NAME, DB_SCHEMA } = process.env;
     console.log(`postgresql://${e(DB_USERNAME)}:${e(DB_PASSWORD)}@${DB_HOST}:${DB_PORT}/${DB_NAME}?schema=${DB_SCHEMA}`);
