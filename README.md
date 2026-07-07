@@ -139,6 +139,9 @@ node services/command/test/smoke-edge.cjs
 # Maneuver proposal end-to-end (ICD §6) — expect 11/11 pass
 node services/command/test/smoke-maneuver.cjs
 
+# Zone change / test-permit gate (ICD §1) — expect 6/6 pass
+node services/command/test/smoke-zone.cjs
+
 # Fleet & mission + pre-departure check — expect 20/20 pass
 #   (clears Mission + PreDepartureCheck rows first; safe in local dev)
 docker exec joppilot_postgres psql -U joppilot -d joppilot_db \
