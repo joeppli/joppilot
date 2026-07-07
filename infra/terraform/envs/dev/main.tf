@@ -7,8 +7,10 @@
 # TARGET NETWORK POSTURE REACHED — M2-3c complete (AD-19): API Gateway (Cognito
 # JWT authorizer) → VPC Link → internal ALB (WAF) → ECS in PRIVATE subnets with
 # no public IP; AWS API access (ECR pull, CloudWatch logs) flows through VPC
-# endpoints, not a NAT gateway. No interim deviations remain — the real services
-# (M2-4) may now be placed behind this stack.
+# endpoints, not a NAT gateway. No NETWORK deviations remain — the real services
+# (M2-4) may now be placed behind this stack. (One recorded engine deviation
+# exists: module.rds below runs interim RDS instead of Aurora, AD-14 — see the
+# deviations register in the architecture doc §11.3.)
 #
 # Still to come: real services on ECS (M2-4-3), IoT Core (M2-5), and — with the
 # SPA's cloud deployment (post M2-5) — S3+CloudFront in front of everything, at
