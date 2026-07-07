@@ -14,7 +14,7 @@ infra/terraform/
   bootstrap/        # run ONCE by hand (state backend + GitHub OIDC + CI role) — see bootstrap/README.md
   envs/
     dev/            # the dev environment root module (terraform runs here)
-  modules/          # reusable building blocks: network, ecr, ecs, alb, cognito, apigw, endpoints
+  modules/          # reusable building blocks: network, ecr, ecs, alb, cognito, apigw, endpoints, aurora
 ```
 
 ## First-time setup
@@ -25,17 +25,20 @@ infra/terraform/
 4. Open a PR changing anything under `infra/terraform/` → CI posts a `plan`.
 5. Merge to `main` → CI runs `apply`.
 
-## What's here now (M2-3c complete)
+## What's here now (M2-4-2 complete)
 
 The deployed dev stack: VPC (multi-AZ public/private subnets) + ECR + ECS Fargate
 hello-world (nginx from our private ECR, **private subnets, no public IP**) +
-VPC endpoints (ecr.api / ecr.dkr / logs + free S3 gateway) + Cognito (invite-only,
-MFA/TOTP, `admin`/`operator` groups) + HTTP API Gateway (Cognito JWT authorizer →
-VPC Link) + **internal ALB** (with WAF). API Gateway is the only public entry
-point; no interim deviations remain (see the header of
+VPC endpoints (ecr.api / ecr.dkr / logs / secretsmanager + free S3 gateway) +
+Cognito (invite-only, MFA/TOTP, `admin`/`operator` groups) + HTTP API Gateway
+(Cognito JWT authorizer → VPC Link) + **internal ALB** (with WAF) + **Aurora
+Serverless v2** (PostgreSQL, min 0 ACU auto-pause, KMS CMK, deletion-protected,
+master password in an RDS-managed Secrets Manager secret). API Gateway is the
+only public entry point; no interim deviations remain (see the header of
 [`envs/dev/main.tf`](envs/dev/main.tf)). Still to come:
 
-- **M2-4** — real services (command/telemetry/fleet) on Fargate + Aurora PostgreSQL.
+- **M2-4-3** — real services (command/telemetry/fleet) on Fargate wired to
+  Aurora + API Gateway (RBAC to verified `cognito:groups`).
 - **M2-5** — IoT Core (topics, X.509/mTLS, Device Shadow).
 
 **One-time image push:** the hello-world task pulls `joppilot/hello-world:latest`
@@ -51,10 +54,12 @@ docker tag public.ecr.aws/nginx/nginx:1.27-alpine \
 docker push 325657596328.dkr.ecr.eu-central-1.amazonaws.com/joppilot/hello-world:latest
 ```
 
-**Cost control:** the billable pieces (ALB+WAF+VPC endpoints, ~$48/mo) tear down
+**Cost control:** the billable pieces (ALB+WAF+VPC endpoints, ~$57/mo) tear down
 with the `terraform-destroy-billables` workflow (Actions tab) and come back by
 re-running the `terraform` workflow — details in the root README's cost-control
-section. Pushed ECR images survive the destroy.
+section. Pushed ECR images survive the destroy. **Aurora is never a destroy
+target** (stateful — permanent rule): min 0 ACU auto-pause already reduces the
+idle cluster to storage-only pennies, and `deletion_protection` blocks deletion.
 
 ## Running locally (optional)
 

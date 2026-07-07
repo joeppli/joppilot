@@ -8,6 +8,15 @@ name: terraform-destroy-billables
 # enrollments!), ECR (pushed images survive), ECS cluster/task definition/IAM
 # roles, CloudWatch logs, budget alarm.
 #
+# AURORA IS DELIBERATELY NOT A TARGET — PERMANENT RULE (M2-4-2). The cluster
+# is STATEFUL: destroying it deletes operational data. Its idle cost is
+# handled by Serverless v2 auto-pause (min 0 ACU → storage-only pennies when
+# idle), so there is nothing to save here; deletion_protection would refuse
+# the destroy anyway. The secretsmanager VPC endpoint (inside
+# module.endpoints) IS destroyed with this button and comes back with the
+# normal apply — the RDS-managed DB secret itself lives outside these targets
+# and survives.
+#
 # HOW TO USE:
 #   Tear down (weekend):  Actions -> terraform-destroy-billables -> Run workflow
 #                         -> set "confirm" to destroy-billables -> Run.

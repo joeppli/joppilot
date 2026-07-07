@@ -57,6 +57,22 @@ output "hello_log_group" {
   value       = module.ecs_hello.log_group
 }
 
+# --- M2-4-2 Aurora ---
+output "aurora_endpoint" {
+  description = "Aurora writer endpoint (DB_HOST for the services; resolves only inside the VPC)."
+  value       = module.aurora.cluster_endpoint
+}
+
+output "aurora_database_name" {
+  description = "Initial database name (DB_NAME for the services)."
+  value       = module.aurora.database_name
+}
+
+output "aurora_master_secret_arn" {
+  description = "RDS-managed Secrets Manager secret with {username, password} — task definitions reference it via valueFrom (M2-4-3)."
+  value       = module.aurora.master_user_secret_arn
+}
+
 # --- M2-3a Cognito ---
 output "cognito_user_pool_id" {
   description = "Cognito user pool id."
