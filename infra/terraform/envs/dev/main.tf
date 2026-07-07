@@ -95,14 +95,17 @@ module "ecs_hello" {
   target_group_arn      = module.alb.target_group_arn
 }
 
-# --- M2-4-2: Aurora Serverless v2 — the relational database (AD-14) ---
-# STATEFUL — never a destroy-billables target (permanent rule). Idle cost is
-# handled by auto-pause instead: min 0 ACU suspends compute after 5 idle
-# minutes, leaving storage-only pennies. deletion_protection guards the rest.
-# Password lives in an RDS-managed Secrets Manager secret (free); private
-# tasks fetch it through the secretsmanager VPC endpoint (module above).
-module "aurora" {
-  source      = "../../modules/aurora"
+# --- M2-4-2: RDS PostgreSQL — the relational database (interim for AD-14) ---
+# INTERIM DEVIATION (recorded in the architecture doc): the free account plan
+# only allows Aurora as a VPC-less public "express" cluster, which contradicts
+# the network posture — so a free-tier db.t4g.micro Postgres runs inside the
+# VPC instead; swaps back to Aurora Serverless v2 when the account upgrades.
+# STATEFUL — never a destroy-billables target (permanent rule);
+# deletion_protection guards the rest. Password lives in an RDS-managed
+# Secrets Manager secret (free); private tasks fetch it through the
+# secretsmanager VPC endpoint (module above).
+module "rds" {
+  source      = "../../modules/rds"
   name_prefix = "joppilot-${var.environment}"
   vpc_id      = module.network.vpc_id
   vpc_cidr    = module.network.vpc_cidr
