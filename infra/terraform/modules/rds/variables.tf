@@ -19,9 +19,14 @@ variable "subnet_ids" {
 }
 
 variable "engine_version" {
-  description = "RDS PostgreSQL engine version"
+  # Major version only, on purpose: RDS retires old Postgres minors for new
+  # instances (pinning 16.6 failed with "Cannot find version"), and with
+  # auto_minor_version_upgrade enabled the provider officially supports a
+  # version prefix — AWS picks the current default minor and later minor
+  # bumps don't churn the plan.
+  description = "RDS PostgreSQL engine version (major-version prefix, e.g. \"16\")"
   type        = string
-  default     = "16.6"
+  default     = "16"
 }
 
 variable "instance_class" {

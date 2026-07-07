@@ -82,8 +82,11 @@ resource "aws_db_instance" "db" {
   identifier     = "${var.name_prefix}-db"
   engine         = "postgres"
   engine_version = var.engine_version
-  instance_class = var.instance_class
-  db_name        = var.database_name
+  # Must stay enabled for the major-version-prefix engine_version above to be
+  # valid (see the variable comment); also keeps retired minors from piling up.
+  auto_minor_version_upgrade = true
+  instance_class             = var.instance_class
+  db_name                    = var.database_name
 
   username                    = var.master_username
   manage_master_user_password = true
