@@ -16,20 +16,59 @@ export class TelemetryWriterService implements OnModuleInit, OnModuleDestroy {
   private pool!: Pool;
   private buffer: TelemetryPayload[] = [];
   private flushTimer?: NodeJS.Timeout;
+  private retryTimer?: NodeJS.Timeout;
+  // False until the schema is confirmed. While false, incoming samples are
+  // DROPPED, not buffered: real-time data is never held back and replayed
+  // later (RTP-08) — a stale telemetry backlog is worthless and unbounded.
+  private ready = false;
+  private dropWarned = false;
 
   private static readonly FLUSH_INTERVAL_MS = 1000;
   private static readonly FLUSH_THRESHOLD = 200; // flush early if buffer fills
   private static readonly COLS = 8;              // bound params per row (created_at uses default)
+  private static readonly RETRY_MS = 5000;
 
   async onModuleInit() {
-    this.pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 4 });
-    await this.ensureSchema();
+    this.pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      max: 4,
+      // Never hang bootstrap on an unreachable DB (pg's default is "wait forever").
+      connectionTimeoutMillis: 5000,
+      // DB_SSL=true (cloud task env): RDS PostgreSQL 15+ ships rds.force_ssl=1,
+      // and raw node-postgres does NOT negotiate TLS on its own (Prisma does,
+      // which is why command/fleet were unaffected). DEV-16: the server cert is
+      // not verified yet — same in-VPC trust boundary and closure trigger as
+      // DEV-2 (in-VPC TLS work in the CloudFront/custom-domain phase).
+      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
+    });
+
+    // FAIL-SOFT boot: the service comes up (and /healthz answers) even when
+    // the DB is not reachable yet; the writer keeps retrying in the
+    // background and logs LOUDLY — a dying task with an empty log taught us
+    // (M2-4-3) that a silent boot failure is the worst failure mode.
+    await this.tryEnsureSchema();
+    if (!this.ready) {
+      this.retryTimer = setInterval(() => void this.tryEnsureSchema(), TelemetryWriterService.RETRY_MS);
+    }
     this.flushTimer = setInterval(() => void this.flush(), TelemetryWriterService.FLUSH_INTERVAL_MS);
-    this.logger.log('Telemetry raw writer ready (batched inserts, ORM bypassed)');
+  }
+
+  private async tryEnsureSchema() {
+    try {
+      await this.ensureSchema();
+      this.ready = true;
+      if (this.retryTimer) { clearInterval(this.retryTimer); this.retryTimer = undefined; }
+      this.logger.log('Telemetry raw writer ready (batched inserts, ORM bypassed)');
+    } catch (e) {
+      this.logger.error(
+        `Telemetry writer DB not ready (retrying every ${TelemetryWriterService.RETRY_MS} ms): ${(e as Error).message}`,
+      );
+    }
   }
 
   async onModuleDestroy() {
     if (this.flushTimer) clearInterval(this.flushTimer);
+    if (this.retryTimer) clearInterval(this.retryTimer);
     await this.flush();
     await this.pool?.end();
   }
@@ -53,6 +92,14 @@ export class TelemetryWriterService implements OnModuleInit, OnModuleDestroy {
   }
 
   enqueue(payload: TelemetryPayload) {
+    if (!this.ready) {
+      // RTP-08: drop, don't backlog. Live consoles still get the broadcast.
+      if (!this.dropWarned) {
+        this.dropWarned = true;
+        this.logger.warn('Dropping telemetry samples until the DB is ready (RTP-08: no buffer-and-replay).');
+      }
+      return;
+    }
     this.buffer.push(payload);
     if (this.buffer.length >= TelemetryWriterService.FLUSH_THRESHOLD) {
       void this.flush();
