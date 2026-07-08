@@ -25,6 +25,13 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
+    // M2-4-3 interim: no cloud MQTT broker until IoT Core (M2-5).
+    // MQTT_ENABLED=false skips the client (and the link monitor) so the task
+    // does not reconnect-loop against localhost and spam CloudWatch.
+    if (process.env.MQTT_ENABLED === 'false') {
+      this.logger.warn('MQTT disabled (MQTT_ENABLED=false) — telemetry ingest inactive until IoT Core (M2-5).');
+      return;
+    }
     const isAws = !!process.env.AWS_IOT_ENDPOINT;
     // Plain-MQTT host/port are configurable (MQTT_HOST/MQTT_PORT) so the
     // containerized service can reach a broker that is not on its own loopback
@@ -98,7 +105,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy() {
     if (this.linkMonitor) clearInterval(this.linkMonitor);
-    this.client.end();
+    this.client?.end();
   }
 
   private handleHeartbeat(message: Buffer) {

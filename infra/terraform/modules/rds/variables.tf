@@ -8,11 +8,6 @@ variable "vpc_id" {
   type        = string
 }
 
-variable "vpc_cidr" {
-  description = "VPC CIDR allowed to reach PostgreSQL (tightened to task SGs in M2-4-3)"
-  type        = string
-}
-
 variable "subnet_ids" {
   description = "Private subnet ids for the DB subnet group (>= 2 AZs required by RDS)"
   type        = list(string)
@@ -61,4 +56,10 @@ variable "backup_retention_days" {
   description = "Automated backup retention in days (max 1 on the AWS free account plan)"
   type        = number
   default     = 1
+}
+
+variable "allowed_security_group_ids" {
+  description = "Map of label → SG id allowed to reach PostgreSQL on 5432 (the service task SGs — DEV-6 closure, SEC-04)."
+  type        = map(string)
+  default     = {}
 }

@@ -33,7 +33,7 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 - **Permit-gated zone change** (ICD §1) — **cloud side only (Gate 1)** so far: opening Mode 2 on a public route (→ `public_test_permit`) is controlled + logged, not an instant override — it requires a cantonal permit (`permitId` + validity window) and reverts to the safe default when the permit lapses. **Not yet end-to-end:** today the cloud zone-change does **not** reach the vehicle — the edge runs from its own `EDGE_ZONE_TYPE` env, so a cloud override is ignored on the vehicle. Delivery to the edge (Device Shadow) lands in **M2-5**, and edge permit consumption (`validFrom`, speed limit) in **M3-5**. The contradiction is fail-safe (the edge stays on its stricter local zone), but the feature is not yet wired through.
 - **Live map** (AD-15) — swisstopo tiles via MapLibre, vehicle position + approved-zone overlay.
 
-> **Not yet** (each now has a slot in the timeline): RBAC identity wiring — the guard + admin-only routes (handover, zone-change) are in place with a dev header-based role (`x-operator-role`); swapping the role source to the verified Cognito `cognito:groups` claim + revocation→disconnect land in **M2-4-3** (same PR that wires command to API Gateway, since the `x-operator-role` header is spoofable behind a proxy). Command signing enforced (**M2-5**), log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). **Cognito identity + MFA + the API Gateway authorizer are already deployed** — see [Cloud (AWS) — M2](#cloud-aws--m2-migration). Track: `.claude/joppilot_project_timeline.md`.
+> **Not yet** (each now has a slot in the timeline): RBAC identity is wired in the cloud since **M2-4-3** — the deployed services read the role from the API-GW-verified `cognito:groups` claim (`AUTH_TRUST_APIGW_JWT=true`; the `x-operator-role` header remains a **local-dev-only** convenience). Still open from the M2-4 scope: operator↔vehicle **assignment model** + assignment check on take-control (SEC-04), revocation→immediate disconnect (SEC-09), mandatory `correlationId` (SEC-06). Command signing enforced (**M2-5**), log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). Track: `.claude/joppilot_project_timeline.md`.
 
 ---
 
@@ -174,7 +174,7 @@ infra/terraform/
 | M2-3c-2 | ECS in **private** subnets, no public IP; VPC endpoints (ECR/logs/S3); image from our ECR | ✅ |
 | M2-4-1 | Containerize the 3 services (single-arg `Dockerfile`, `node:22-alpine`, `pnpm deploy`) + CI build/push to 3 new ECR repos (`:latest`+`:sha`) | ✅ |
 | M2-4-2 | RDS PostgreSQL db.t4g.micro in-VPC (KMS CMK, deletion-protected; **interim for AD-14** — the free account plan only allows Aurora as a public VPC-less "express" cluster, swaps back to Aurora Serverless v2 on plan upgrade) + RDS-managed secret + `secretsmanager` VPC endpoint + Prisma migrations per schema, applied by the container entrypoint | ✅ |
-| M2-4-3 | real services (command/telemetry/fleet) on ECS + RBAC to verified `cognito:groups` | ⏳ |
+| M2-4-3 | Real services (command/telemetry/fleet) on ECS Fargate: path-routed behind the internal ALB (`/api/command|maneuver` → 4000, `/api/fleet` → 4002, `/api/telemetry` → 4001), DB creds injected from the RDS-managed secret, **Serverless Valkey** (fencing lock, TLS-only) + RBAC from the API-GW-verified `cognito:groups` claim (closes DEV-7; trust note = DEV-15) + DB/Valkey SG ingress restricted to task SGs (closes DEV-6). **MQTT stays disabled until M2-5** (no broker in the cloud yet) — command/fleet REST is live, telemetry is deployed dormant | ✅ |
 | M2-5 | IoT Core (MQTT backbone, mTLS, Device Shadow) | ⏳ |
 | later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
 
@@ -182,16 +182,21 @@ infra/terraform/
 
 ```
 client ──HTTPS──▶ API Gateway (HTTP API, Cognito JWT authorizer)
-                    └─▶ VPC Link ─▶ internal ALB (WAF) ─▶ ECS Fargate (nginx)
+                    └─▶ VPC Link ─▶ internal ALB (WAF)
+                          ├─ /api/command/* · /api/maneuver/* ─▶ command :4000
+                          ├─ /api/fleet/*                     ─▶ fleet   :4002
+                          ├─ /api/telemetry/*                 ─▶ telemetry :4001 (dormant until M2-5)
+                          └─ (default)                        ─▶ hello-world nginx
 ```
 
 The ALB is **internal** since M2-3c-1b: private subnets, SG restricted to the VPC —
 its DNS name no longer answers from the internet, and API Gateway is the **only**
-public entry point.
+public entry point. Each task SG accepts traffic only from the ALB SG; the DB and
+Valkey SGs accept only the task SGs (SEC-04).
 
-> **No interim deviations remain** — M2-3c is complete. ECS runs in private
-> subnets with no public IP; image pull (private ECR) and logs flow through VPC
-> endpoints. The stack is ready to receive the real services (M2-4).
+> **Console ↔ cloud is NOT wired yet:** the console still talks to localhost
+> services, and Socket.IO/WebSocket does not traverse the HTTP API — live
+> telemetry to the cloud console arrives with the CloudFront/SPA phase.
 
 ### Test the cloud stack
 
@@ -202,38 +207,54 @@ console. It gets a NEW value on every destroy/restore cycle (see cost control).
 # No token must be rejected by the Cognito authorizer:
 curl -i https://<api_endpoint>/            # → HTTP 401 {"message":"Unauthorized"}
 
-# With a Cognito ID token (and the task scaled to 1) → nginx:
-curl -H "Authorization: Bearer <ID_TOKEN>" https://<api_endpoint>/   # → 200
+# With a Cognito ID token: take control of a vehicle through the cloud (Gate 1):
+curl -X POST -H "Authorization: Bearer <ID_TOKEN>" -H 'Content-Type: application/json' \
+  -d '{"operatorId":"OP-1"}' https://<api_endpoint>/api/command/VEH-001/take-control
+# → {"status":"success","token":...}   (proves ALB routing + Valkey + RDS)
+
+# RBAC (DEV-7 closed): an admin-only route with a NON-admin user's token → 403.
+curl -X POST -H "Authorization: Bearer <OPERATOR_ID_TOKEN>" -H 'Content-Type: application/json' \
+  -d '{"zone":"depot"}' https://<api_endpoint>/api/command/VEH-001/zone
+# → 403 {"reason":"UNAUTHORIZED",...}; the same call with an admin-group token succeeds.
+
+# Fleet pre-departure workflow (LEG-03) end-to-end:
+curl -X POST -H "Authorization: Bearer <ID_TOKEN>" https://<api_endpoint>/api/fleet/VEH-001/mission
 
 # The internal ALB does NOT answer from the internet — a timeout here is correct
 # behaviour (proof that API Gateway is the only entry), not an error:
 curl -m 10 http://<alb_dns_name>/          # → timeout
 ```
 
-A valid Cognito **bearer token** on the API Gateway call reaches nginx (needs a
-user — invite-only). Gotcha: the authorizer's audience is the app client id; if a
+A valid Cognito **bearer token** on the API Gateway call reaches the services (needs
+a user — invite-only). Gotcha: the authorizer's audience is the app client id; if a
 valid token still 401s, send the **ID token** (Cognito access tokens have no `aud`).
+The RolesGuard reads the role from the ID token's `cognito:groups` claim — put admin
+users in the Cognito `admin` group, operators in `operator`.
 
 ### Cost control (stop paying overnight)
 
-Fargate is the main variable cost. Scale the task to 0 when you stop for the day —
-the service uses `ignore_changes = [desired_count]`, so Terraform won't revert it:
+Fargate is the main variable cost — now **4 services** (hello + command + telemetry +
+fleet, ~$9/mo each while running). Scale to 0 when you stop for the day — every
+service uses `ignore_changes = [desired_count]`, so Terraform won't revert it:
 
 ```bash
-aws ecs update-service --cluster joppilot-dev-cluster \
-  --service joppilot-dev-hello --desired-count 0 --region eu-central-1
+for s in hello command telemetry fleet; do
+  aws ecs update-service --cluster joppilot-dev-cluster \
+    --service joppilot-dev-$s --desired-count 0 --region eu-central-1
+done
 # resume: --desired-count 1   (or ECS console → service → Update)
 ```
 
 Standing costs that do **not** scale to zero: **ALB (~$16/mo)** + **WAF (~$6/mo)** +
-**4 interface VPC endpoints (~$35/mo, single-AZ)** ≈ **$57/mo total**. For those there
-is a one-click **destroy button**: Actions → `terraform-destroy-billables` → Run
-workflow → set confirm to `destroy-billables`. It destroys only the billable pieces
-(ALB+WAF, API Gateway, VPC endpoints, ECS service) and keeps everything free — VPC,
-**Cognito users + MFA enrollments**, ECR (pushed images survive), the ECS cluster.
-Restore: run the `terraform` workflow manually (or merge any infra PR — apply rebuilds
-it); the service comes back with 0 tasks and `api_endpoint` gets a new URL. An
-`$80/mo` AWS Budgets alarm emails at 50 / 80 / 100 %.
+**4 interface VPC endpoints (~$35/mo, single-AZ)** + **Serverless Valkey (~$6/mo
+floor)** ≈ **$63/mo total**. For those there is a one-click **destroy button**:
+Actions → `terraform-destroy-billables` → Run workflow → set confirm to
+`destroy-billables`. It destroys only the billable pieces (ALB+WAF, API Gateway,
+VPC endpoints, ECS services, Valkey — the cache is ephemeral, 6-second locks lose
+nothing) and keeps everything free — VPC, **Cognito users + MFA enrollments**, ECR
+(pushed images survive), the ECS cluster. Restore: run the `terraform` workflow
+manually (or merge any infra PR — apply rebuilds it); services come back and
+`api_endpoint` gets a new URL. An `$80/mo` AWS Budgets alarm emails at 50 / 80 / 100 %.
 
 **The database is deliberately NOT in the destroy button** (stateful — permanent
 rule). It also costs (almost) nothing to keep: **db.t4g.micro + 20 GB sits inside

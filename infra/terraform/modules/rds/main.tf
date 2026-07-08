@@ -57,24 +57,32 @@ resource "aws_db_subnet_group" "db" {
 
 resource "aws_security_group" "db" {
   name_prefix = "${var.name_prefix}-db-"
-  description = "RDS PostgreSQL: access from inside the VPC"
+  description = "RDS PostgreSQL: access only from the service task SGs"
   vpc_id      = var.vpc_id
 
-  # Dev posture: any VPC-internal caller. M2-4-3 tightens this to the service
-  # task SGs once the real services (and their SGs) exist.
-  ingress {
-    description = "PostgreSQL from the VPC"
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = [var.vpc_cidr]
-  }
+  # DEV-6 CLOSED (M2-4-3): no inline VPC-wide ingress anymore. Ingress rules
+  # live as STANDALONE resources below, one per allowed task SG — standalone
+  # rules tolerate plan-time-unknown SG ids (the service SGs are created in
+  # the same run), which inline rules famously don't ("inconsistent final
+  # plan", see the ecs module comment). Never mix inline and standalone rules
+  # on the same SG.
 
   tags = { Name = "${var.name_prefix}-db-sg" }
 
   lifecycle {
     create_before_destroy = true
   }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "from_tasks" {
+  for_each = var.allowed_security_group_ids
+
+  security_group_id            = aws_security_group.db.id
+  description                  = "PostgreSQL from ${each.key}"
+  from_port                    = 5432
+  to_port                      = 5432
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = each.value
 }
 
 # --- The instance ---------------------------------------------------------------

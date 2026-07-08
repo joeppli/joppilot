@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MqttService } from './mqtt.service';
 import { CommandController } from './command.controller';
+import { HealthController } from './health.controller';
 import { ManeuverController } from './maneuver.controller';
 import { ManeuverService } from './maneuver.service';
 import { ManeuverGateway } from './maneuver.gateway';
@@ -11,7 +12,7 @@ import { ZoneService } from './zone.service';
 
 @Module({
   imports: [],
-  controllers: [CommandController, ManeuverController],
+  controllers: [CommandController, ManeuverController, HealthController],
   providers: [MqttService, PrismaService, RedisService, SessionService, ZoneService, ManeuverService, ManeuverGateway],
 })
 export class AppModule {}
