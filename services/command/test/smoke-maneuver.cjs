@@ -37,12 +37,12 @@ function assert(label, condition, detail) {
   }
 }
 
-function httpPost(path, body) {
+function httpPost(path, body, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
     const req = http.request({
       hostname: '127.0.0.1', port: 4000, path, method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), ...extraHeaders },
     }, (res) => {
       let buf = '';
       res.on('data', (c) => buf += c);
@@ -84,13 +84,20 @@ client.on('connect', () => {
     }, 1000);
 
     // Clear any existing safe-stop latch from prior tests
+    // (correlationId is REQUIRED since M2-4 — the edge NACKs without it)
     const clearEnv = {
-      commandId: uuid(), sessionId: 'sess-smoke', vehicleId: V, issuer: 'OP-SMOKE',
+      commandId: uuid(), correlationId: uuid(), sessionId: 'sess-smoke', vehicleId: V, issuer: 'OP-SMOKE',
       mode: 'MODE1', token: { tokenId: uuid(), issuedAt: Date.now() },
       timestamp: Date.now(), ttlMs: 5000, payload: { action: 'CLEAR_SAFE_STOP' },
     };
     client.publish(TOPICS.cmd, JSON.stringify(clearEnv));
     await new Promise(r => setTimeout(r, 1000));
+
+    // SEC-04 (M2-4-4): seed an assignment so take-control works when the
+    // command service runs with ASSIGNMENT_ENFORCEMENT=true. Admin-only route,
+    // driven with the local dev role header; harmless when enforcement is off.
+    await httpPost(`/api/command/${V}/assign`, { operatorId: 'OP-SMOKE', assignedBy: 'SMOKE-ADMIN' },
+      { 'x-operator-role': 'admin' });
 
     // 1. Wait for the edge to produce a proposal
     console.log('Waiting for a maneuver proposal from edge sim...');

@@ -1,8 +1,9 @@
-import { Controller, Post, Param, Body, Logger, UnauthorizedException, BadRequestException, ForbiddenException, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Param, Body, Logger, UnauthorizedException, BadRequestException, ForbiddenException, UseGuards } from '@nestjs/common';
 import { MqttService } from './mqtt.service';
 import { SessionService } from './session.service';
 import { PrismaService } from './prisma.service';
 import { ZoneService } from './zone.service';
+import { AssignmentService } from './assignment.service';
 import { Roles, RolesGuard } from './roles.guard';
 import {
   CommandEnvelope,
@@ -26,16 +27,66 @@ export class CommandController {
     private readonly mqttService: MqttService,
     private readonly sessionService: SessionService,
     private readonly zoneService: ZoneService,
+    private readonly assignments: AssignmentService,
     private readonly prisma: PrismaService
   ) {}
 
   @Post(':vehicleId/take-control')
   async takeControl(@Param('vehicleId') vehicleId: string, @Body('operatorId') operatorId: string) {
+    // SEC-04: control/supervision authority is valid only for ASSIGNED
+    // vehicles. Checked BEFORE the lock so an unassigned operator can never
+    // hold even a transient token.
+    if (!(await this.assignments.canControl(vehicleId, operatorId))) {
+      await this.logEdr(uuidv4(), vehicleId, operatorId, 'TAKE_CONTROL', 'REJECTED', { reason: 'NO_ASSIGNMENT' });
+      throw new ForbiddenException({
+        reason: 'NO_ASSIGNMENT',
+        details: `Operator '${operatorId}' has no active assignment for ${vehicleId} (SEC-04).`,
+      });
+    }
     const result = await this.sessionService.takeControl(vehicleId, operatorId);
     if (!result) {
       throw new UnauthorizedException('Vehicle is currently locked by another operator.');
     }
     return { status: 'success', token: result.token, issuedAt: result.issuedAt };
+  }
+
+  /** SEC-04: grant an operator control authority over a vehicle. Admin-only. */
+  @Roles('admin')
+  @Post(':vehicleId/assign')
+  async assign(
+    @Param('vehicleId') vehicleId: string,
+    @Body('operatorId') operatorId: string,
+    @Body('assignedBy') assignedBy: string = 'ADMIN',
+  ) {
+    if (!operatorId) throw new BadRequestException('operatorId is required');
+    const result = await this.assignments.assign(vehicleId, operatorId, assignedBy);
+    await this.logEdr(uuidv4(), vehicleId, assignedBy, 'ASSIGN_OPERATOR', 'ACK', { operatorId, ...result });
+    return { status: 'success', vehicleId, operatorId, ...result };
+  }
+
+  /**
+   * SEC-04/SEC-09: revoke an operator's assignment. If they hold the active
+   * session, the fencing lock is deleted — their commands and heartbeats fail
+   * immediately, and the vehicle's watchdog latches a safe stop on the
+   * resulting silence (the fail-safe chain performs the "disconnect").
+   */
+  @Roles('admin')
+  @Post(':vehicleId/unassign')
+  async unassign(
+    @Param('vehicleId') vehicleId: string,
+    @Body('operatorId') operatorId: string,
+    @Body('revokedBy') revokedBy: string = 'ADMIN',
+  ) {
+    if (!operatorId) throw new BadRequestException('operatorId is required');
+    const result = await this.assignments.revoke(vehicleId, operatorId, revokedBy);
+    await this.logEdr(uuidv4(), vehicleId, revokedBy, 'REVOKE_OPERATOR', 'ACK', { operatorId, ...result });
+    return { status: 'success', vehicleId, operatorId, ...result };
+  }
+
+  @Roles('admin')
+  @Get(':vehicleId/assignments')
+  async listAssignments(@Param('vehicleId') vehicleId: string) {
+    return this.assignments.listForVehicle(vehicleId);
   }
 
   @Post(':vehicleId/heartbeat')
@@ -245,7 +296,7 @@ export class CommandController {
       throw new BadRequestException({ reason: 'SCHEMA_INVALID', details: check.error.issues });
     }
 
-    await this.logEdr(commandId, vehicleId, operatorId, payload.action, 'PENDING', envelope);
+    await this.logEdr(commandId, vehicleId, operatorId, payload.action, 'PENDING', envelope, envelope.correlationId);
 
     const topic = `joppilot/v1/vehicles/${vehicleId}/${channel}`;
     this.mqttService.publish(topic, envelope);
@@ -259,10 +310,13 @@ export class CommandController {
     issuer: string,
     action: string,
     status: string,
-    details: unknown
+    details: unknown,
+    // SEC-06: every row is correlatable; rejections/admin ops that never grew
+    // an envelope get a fresh id of their own.
+    correlationId: string = uuidv4()
   ) {
     await this.prisma.eventDataRecord.create({
-      data: { commandId, vehicleId, issuer, action, status, details: JSON.parse(JSON.stringify(details)) },
+      data: { commandId, correlationId, vehicleId, issuer, action, status, details: JSON.parse(JSON.stringify(details)) },
     });
   }
 }

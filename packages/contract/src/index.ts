@@ -183,10 +183,10 @@ export const CommandPayloadSchema = z.discriminatedUnion('action', [
 // ------------------------------------------------------------------
 export const CommandEnvelopeSchema = z.object({
   commandId: z.string().uuid(),
-  // TODO(M2-4): make REQUIRED. The WORM/EDR audit chain (SEC-06, LEG-04/05)
-  // correlates records by this id; it needs no crypto, only discipline — Gate 1
-  // must generate it when the console omits it, and every EDR row must carry it.
-  correlationId: z.string().uuid().optional(),
+  // REQUIRED since M2-4 (SEC-06): the EDR audit chain correlates records by
+  // this id. Gate 1 generates it when the console omits it; every EDR row
+  // carries it; the edge NACKs an envelope without one (SCHEMA_INVALID).
+  correlationId: z.string().uuid(),
   sessionId: z.string().min(1),
   vehicleId: z.string().min(1),
   issuer: z.string().min(1),

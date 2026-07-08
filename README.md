@@ -30,10 +30,11 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 - **Mission lifecycle** — `PENDING → PRE_CHECK → ACTIVE → PAUSED → COMPLETED / ABORTED`.
 - **Disruptive-diagnostic deferral** (ICD §1 footnote) — `RESTART_*` / `UPDATE_CONFIG` deferred on a public approved route unless the vehicle is stationary; edge enforces it from live road speed.
 - **Single-operator lock + handover** (ICD §8 / SEC-05) — fencing token in Valkey; a handover elevates the token so the previous operator's commands are rejected on the vehicle.
+- **Operator↔vehicle assignment + revocation** (SEC-04/09, M2-4-4) — admin-granted assignments gate take-control (cloud-enforced; `ASSIGNMENT_ENFORCEMENT=true`); revoking severs an active session immediately (lock deleted → commands/heartbeats fail → vehicle watchdog latches). Every grant/revocation is EDR-logged.
 - **Permit-gated zone change** (ICD §1) — **cloud side only (Gate 1)** so far: opening Mode 2 on a public route (→ `public_test_permit`) is controlled + logged, not an instant override — it requires a cantonal permit (`permitId` + validity window) and reverts to the safe default when the permit lapses. **Not yet end-to-end:** today the cloud zone-change does **not** reach the vehicle — the edge runs from its own `EDGE_ZONE_TYPE` env, so a cloud override is ignored on the vehicle. Delivery to the edge (Device Shadow) lands in **M2-5**, and edge permit consumption (`validFrom`, speed limit) in **M3-5**. The contradiction is fail-safe (the edge stays on its stricter local zone), but the feature is not yet wired through.
 - **Live map** (AD-15) — swisstopo tiles via MapLibre, vehicle position + approved-zone overlay.
 
-> **Not yet** (each now has a slot in the timeline): RBAC identity is wired in the cloud since **M2-4-3** — the deployed services read the role from the API-GW-verified `cognito:groups` claim (`AUTH_TRUST_APIGW_JWT=true`; the `x-operator-role` header remains a **local-dev-only** convenience). Still open from the M2-4 scope: operator↔vehicle **assignment model** + assignment check on take-control (SEC-04), revocation→immediate disconnect (SEC-09), mandatory `correlationId` (SEC-06). Command signing enforced (**M2-5**), log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). Track: `.claude/joppilot_project_timeline.md`.
+> **Not yet** (each now has a slot in the timeline): RBAC identity is wired in the cloud since **M2-4-3** — the deployed services read the role from the API-GW-verified `cognito:groups` claim (`AUTH_TRUST_APIGW_JWT=true`; the `x-operator-role` header remains a **local-dev-only** convenience). The rest of the M2-4 scope landed with **M2-4-4**: operator↔vehicle **assignment model** + assignment check on take-control (SEC-04, cloud-enforced via `ASSIGNMENT_ENFORCEMENT=true`), revocation→immediate session severing (SEC-09: lock deleted → commands/heartbeats fail → vehicle watchdog latches), and **mandatory `correlationId`** (SEC-06: Gate 1 generates, EDR column carries, edge NACKs without it; the maneuver chain correlates by `proposalId`). Command signing enforced (**M2-5**), log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). Track: `.claude/joppilot_project_timeline.md`.
 
 ---
 
@@ -114,8 +115,13 @@ Then open **http://localhost:3000**.
 With infra + all services + the edge running:
 
 ```bash
-# Edge Gate-2 smoke test — expect 11/11 pass
+# Edge Gate-2 smoke test — expect 12/12 pass
 node services/command/test/smoke-edge.cjs
+
+# Assignment + revocation (SEC-04/09) — expect 9/9 pass. Needs the command
+# service restarted with enforcement on (dev default is off):
+#   cd services/command && ASSIGNMENT_ENFORCEMENT=true node dist/main
+node services/command/test/smoke-assignment.cjs
 
 # Maneuver proposal end-to-end (ICD §6) — expect 11/11 pass
 node services/command/test/smoke-maneuver.cjs
@@ -175,6 +181,7 @@ infra/terraform/
 | M2-4-1 | Containerize the 3 services (single-arg `Dockerfile`, `node:22-alpine`, `pnpm deploy`) + CI build/push to 3 new ECR repos (`:latest`+`:sha`) | ✅ |
 | M2-4-2 | RDS PostgreSQL db.t4g.micro in-VPC (KMS CMK, deletion-protected; **interim for AD-14** — the free account plan only allows Aurora as a public VPC-less "express" cluster, swaps back to Aurora Serverless v2 on plan upgrade) + RDS-managed secret + `secretsmanager` VPC endpoint + Prisma migrations per schema, applied by the container entrypoint | ✅ |
 | M2-4-3 | Real services (command/telemetry/fleet) on ECS Fargate: path-routed behind the internal ALB (`/api/command|maneuver` → 4000, `/api/fleet` → 4002, `/api/telemetry` → 4001), DB creds injected from the RDS-managed secret, **Serverless Valkey** (fencing lock, TLS-only) + RBAC from the API-GW-verified `cognito:groups` claim (closes DEV-7; trust note = DEV-15) + DB/Valkey SG ingress restricted to task SGs (closes DEV-6). **MQTT stays disabled until M2-5** (no broker in the cloud yet) — command/fleet REST is live, telemetry is deployed dormant | ✅ |
+| M2-4-4 | Rest of the M2-4 scope: operator↔vehicle **assignment model** + take-control gate (SEC-04, `ASSIGNMENT_ENFORCEMENT=true` on the command task), revocation → immediate session severing (SEC-09), **mandatory `correlationId`** end-to-end (SEC-06: envelope schema + EDR column + edge NACK; maneuver chain correlates by `proposalId`) | ✅ |
 | M2-5 | IoT Core (MQTT backbone, mTLS, Device Shadow) | ⏳ |
 | later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
 
@@ -207,10 +214,18 @@ console. It gets a NEW value on every destroy/restore cycle (see cost control).
 # No token must be rejected by the Cognito authorizer:
 curl -i https://<api_endpoint>/            # → HTTP 401 {"message":"Unauthorized"}
 
-# With a Cognito ID token: take control of a vehicle through the cloud (Gate 1):
+# SEC-04 (M2-4-4): in the cloud an operator must be ASSIGNED before take-control.
+# Assign first with an ADMIN-group token, then take control:
+curl -X POST -H "Authorization: Bearer <ADMIN_ID_TOKEN>" -H 'Content-Type: application/json' \
+  -d '{"operatorId":"OP-1"}' https://<api_endpoint>/api/command/VEH-001/assign
 curl -X POST -H "Authorization: Bearer <ID_TOKEN>" -H 'Content-Type: application/json' \
   -d '{"operatorId":"OP-1"}' https://<api_endpoint>/api/command/VEH-001/take-control
 # → {"status":"success","token":...}   (proves ALB routing + Valkey + RDS)
+# Without the assign step the same call returns 403 {"reason":"NO_ASSIGNMENT"}.
+# Revoke + immediate session severing (SEC-09):
+curl -X POST -H "Authorization: Bearer <ADMIN_ID_TOKEN>" -H 'Content-Type: application/json' \
+  -d '{"operatorId":"OP-1"}' https://<api_endpoint>/api/command/VEH-001/unassign
+# → {"sessionSevered":true,...}; the operator's token stops working at once.
 
 # RBAC (DEV-7 closed): an admin-only route with a NON-admin user's token → 403.
 curl -X POST -H "Authorization: Bearer <OPERATOR_ID_TOKEN>" -H 'Content-Type: application/json' \

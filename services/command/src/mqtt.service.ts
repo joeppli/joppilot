@@ -84,6 +84,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
           await this.prisma.eventDataRecord.create({
             data: {
               commandId: payload.commandId,
+              // SEC-06: the ACK inherits the correlation id of the command it
+              // answers, so the whole exchange reads as one chain.
+              correlationId: original?.correlationId ?? uuidv4(),
               vehicleId: original?.vehicleId ?? topic.split('/')[3],
               issuer: 'VEHICLE',
               action: original?.action ?? 'UNKNOWN',
@@ -145,6 +148,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     await this.prisma.eventDataRecord.create({
       data: {
         commandId: uuidv4(),
+        correlationId: uuidv4(),
         vehicleId: hb.vehicleId,
         issuer: 'VEHICLE',
         action: 'SAFE_STOP_LATCH',

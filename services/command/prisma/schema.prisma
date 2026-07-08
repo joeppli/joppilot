@@ -23,15 +23,37 @@ datasource db {
 // therefore a correlation key, NOT unique: one command yields one PENDING
 // row plus one row per ACK/NACK/status transition.
 model EventDataRecord {
-  id          String   @id @default(uuid())
-  commandId   String
-  vehicleId   String
-  issuer      String
-  action      String
-  status      String   // e.g. "PENDING", "ACK", "REJECTED"
-  details     Json?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            String   @id @default(uuid())
+  commandId     String
+  // SEC-06: records are correlatable via a correlation id. Nullable only for
+  // rows written before M2-4; every new row carries one.
+  correlationId String?
+  vehicleId     String
+  issuer        String
+  action        String
+  status        String   // e.g. "PENDING", "ACK", "REJECTED"
+  details       Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@index([commandId])
+  @@index([correlationId])
+}
+
+// Operator ↔ vehicle assignment (SEC-04): remote control/supervision authority
+// is valid ONLY for assigned vehicles. Rows are the operational state; every
+// grant/revocation is additionally EDR-logged (LEG-05 chain of evidence).
+// Revocation keeps the row (active=false + revokedAt/By) — assignment history
+// is part of "who was allowed to command what, when".
+model VehicleAssignment {
+  id         String    @id @default(uuid())
+  vehicleId  String
+  operatorId String
+  active     Boolean   @default(true)
+  assignedBy String
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+  revokedBy  String?
+
+  @@index([vehicleId, operatorId, active])
 }

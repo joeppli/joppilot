@@ -114,8 +114,10 @@ export class SessionService {
 
   async triggerSafeStop(vehicleId: string) {
     const commandId = uuidv4();
+    const correlationId = uuidv4();
     const envelope: CommandEnvelope = {
       commandId,
+      correlationId,
       sessionId: 'DEADMAN-SYSTEM',
       vehicleId,
       issuer: 'SYSTEM',
@@ -133,6 +135,7 @@ export class SessionService {
     await this.prisma.eventDataRecord.create({
       data: {
         commandId,
+        correlationId,
         vehicleId,
         issuer: 'SYSTEM',
         action: 'SAFE_STOP',
