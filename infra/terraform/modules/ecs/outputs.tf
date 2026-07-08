@@ -17,3 +17,8 @@ output "security_group_id" {
   description = "Security group attached to the task."
   value       = aws_security_group.this.id
 }
+
+output "cluster_arn" {
+  description = "ECS cluster ARN — the real service modules (M2-4-3) join this shared cluster."
+  value       = aws_ecs_cluster.this.arn
+}

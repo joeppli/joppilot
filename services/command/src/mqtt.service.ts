@@ -18,6 +18,15 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   constructor(private prisma: PrismaService) {}
 
   onModuleInit() {
+    // M2-4-3 interim: the cloud has no MQTT broker until IoT Core lands
+    // (M2-5). MQTT_ENABLED=false skips the client entirely — otherwise the
+    // task would reconnect-loop against localhost forever, spamming
+    // CloudWatch. Command publish / ACK ingest / latch-EDR stay inactive
+    // until M2-5 wires the real backbone.
+    if (process.env.MQTT_ENABLED === 'false') {
+      this.logger.warn('MQTT disabled (MQTT_ENABLED=false) — vehicle channels inactive until IoT Core (M2-5).');
+      return;
+    }
     const isAws = !!process.env.AWS_IOT_ENDPOINT;
     // Plain-MQTT host/port are configurable (MQTT_HOST/MQTT_PORT) so the
     // containerized service can reach a broker that is not on its own loopback
@@ -101,7 +110,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleDestroy() {
-    this.client.end();
+    this.client?.end();
   }
 
   subscribeManeuver(handler: (topic: string, message: Buffer) => void) {
@@ -147,7 +156,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   }
 
   publish(topic: string, payload: any) {
-    if (this.client.connected) {
+    if (this.client?.connected) {
       this.client.publish(topic, JSON.stringify(payload), { qos: 1 });
       this.logger.log(`Published to ${topic}: ${JSON.stringify(payload)}`);
     } else {

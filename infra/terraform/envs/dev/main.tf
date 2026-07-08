@@ -110,8 +110,119 @@ module "rds" {
   source      = "../../modules/rds"
   name_prefix = "joppilot-${var.environment}"
   vpc_id      = module.network.vpc_id
-  vpc_cidr    = module.network.vpc_cidr
   subnet_ids  = module.network.private_subnet_ids
+
+  # DEV-6 closed (M2-4-3): PostgreSQL ingress is restricted to the three
+  # service task SGs — the VPC-wide CIDR rule is gone.
+  allowed_security_group_ids = {
+    command   = module.service_command.task_security_group_id
+    telemetry = module.service_telemetry.task_security_group_id
+    fleet     = module.service_fleet.task_security_group_id
+  }
+}
+
+# --- M2-4-3: ElastiCache Serverless Valkey — the fencing-lock cache (SEC-05) ---
+# Ephemeral by design (locks live 6 s) → safe destroy-billables target.
+# Serverless is TLS-only → the command service gets REDIS_TLS=true.
+module "valkey" {
+  source      = "../../modules/valkey"
+  name_prefix = "joppilot-${var.environment}"
+  vpc_id      = module.network.vpc_id
+  subnet_ids  = module.network.private_subnet_ids
+
+  allowed_security_group_ids = {
+    command = module.service_command.task_security_group_id
+  }
+}
+
+# --- M2-4-3: the three REAL services on Fargate --------------------------------
+# Shared wiring: private subnets, shared cluster (ecs module), shared internal
+# ALB with path-based listener rules, DB creds injected from the RDS-managed
+# secret (valueFrom — never plaintext). RBAC: AUTH_TRUST_APIGW_JWT=true flips
+# the RolesGuard to the cognito:groups claim of the JWT the API Gateway
+# authorizer verified (closes DEV-7; trust note = DEV-15). MQTT_ENABLED=false
+# until the IoT Core backbone lands (M2-5).
+locals {
+  db_env = {
+    DB_HOST   = module.rds.db_host
+    DB_PORT   = tostring(module.rds.port)
+    DB_NAME   = module.rds.database_name
+    MQTT_ENABLED = "false"
+    AUTH_TRUST_APIGW_JWT = "true"
+  }
+  db_secrets = {
+    DB_USERNAME = "${module.rds.master_user_secret_arn}:username::"
+    DB_PASSWORD = "${module.rds.master_user_secret_arn}:password::"
+  }
+}
+
+module "service_command" {
+  source                = "../../modules/service"
+  name_prefix           = "joppilot-${var.environment}"
+  service_name          = "command"
+  vpc_id                = module.network.vpc_id
+  subnet_ids            = module.network.private_subnet_ids
+  cluster_arn           = module.ecs_hello.cluster_arn
+  container_image       = "${module.ecr.repository_urls["joppilot/command"]}:latest"
+  container_port        = 4000
+  alb_security_group_id = module.alb.security_group_id
+  alb_listener_arn      = module.alb.listener_arn
+  # /api/command + /api/maneuver + /healthz-command probes route here.
+  listener_rule_priority = 10
+  path_patterns          = ["/api/command/*", "/api/maneuver/*"]
+  desired_count          = var.service_desired_count
+
+  environment = merge(local.db_env, {
+    DB_SCHEMA  = "command"
+    REDIS_HOST = module.valkey.endpoint_host
+    REDIS_PORT = tostring(module.valkey.endpoint_port)
+    REDIS_TLS  = "true"
+  })
+  secrets     = local.db_secrets
+  secret_arns = [module.rds.master_user_secret_arn]
+}
+
+module "service_telemetry" {
+  source                = "../../modules/service"
+  name_prefix           = "joppilot-${var.environment}"
+  service_name          = "telemetry"
+  vpc_id                = module.network.vpc_id
+  subnet_ids            = module.network.private_subnet_ids
+  cluster_arn           = module.ecs_hello.cluster_arn
+  container_image       = "${module.ecr.repository_urls["joppilot/telemetry"]}:latest"
+  container_port        = 4001
+  alb_security_group_id = module.alb.security_group_id
+  alb_listener_arn      = module.alb.listener_arn
+  listener_rule_priority = 20
+  path_patterns          = ["/api/telemetry/*"]
+  desired_count          = var.service_desired_count
+
+  # Telemetry writes raw pg into the default `public` schema (DEV-9); it has
+  # no MQTT source until IoT Core (M2-5) — the task is deployed dormant so the
+  # M2-5 wiring lands on running plumbing.
+  environment = merge(local.db_env, { DB_SCHEMA = "public" })
+  secrets     = local.db_secrets
+  secret_arns = [module.rds.master_user_secret_arn]
+}
+
+module "service_fleet" {
+  source                = "../../modules/service"
+  name_prefix           = "joppilot-${var.environment}"
+  service_name          = "fleet"
+  vpc_id                = module.network.vpc_id
+  subnet_ids            = module.network.private_subnet_ids
+  cluster_arn           = module.ecs_hello.cluster_arn
+  container_image       = "${module.ecr.repository_urls["joppilot/fleet"]}:latest"
+  container_port        = 4002
+  alb_security_group_id = module.alb.security_group_id
+  alb_listener_arn      = module.alb.listener_arn
+  listener_rule_priority = 30
+  path_patterns          = ["/api/fleet/*"]
+  desired_count          = var.service_desired_count
+
+  environment = merge(local.db_env, { DB_SCHEMA = "fleet" })
+  secrets     = local.db_secrets
+  secret_arns = [module.rds.master_user_secret_arn]
 }
 
 # --- M2-3a: Cognito identity + MFA + RBAC groups (free tier, no standing cost) ---

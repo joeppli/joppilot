@@ -98,3 +98,27 @@ output "cognito_group_names" {
   description = "RBAC group names (map to roles via the cognito:groups JWT claim)."
   value       = module.cognito.group_names
 }
+
+# --- M2-4-3 real services + Valkey ---
+output "service_names" {
+  description = "ECS service names for the three real services (for manual scaling: aws ecs update-service --service <name> --desired-count 0|1)."
+  value = {
+    command   = module.service_command.service_name
+    telemetry = module.service_telemetry.service_name
+    fleet     = module.service_fleet.service_name
+  }
+}
+
+output "service_log_groups" {
+  description = "CloudWatch log groups of the three services (first stop when a task won't go healthy — the entrypoint logs `prisma migrate deploy` before the app boots)."
+  value = {
+    command   = module.service_command.log_group
+    telemetry = module.service_telemetry.log_group
+    fleet     = module.service_fleet.log_group
+  }
+}
+
+output "valkey_endpoint" {
+  description = "Valkey (fencing-lock cache) endpoint host — TLS-only; only the command task SG can reach it."
+  value       = module.valkey.endpoint_host
+}

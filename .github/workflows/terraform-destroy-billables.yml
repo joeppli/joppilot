@@ -1,12 +1,15 @@
 name: terraform-destroy-billables
 
 # The weekend cost button. Destroys ONLY the modules with a standing hourly
-# charge — the ALB (+WAF, ~$22/mo combined), the API Gateway stack and the VPC
-# interface endpoints (~$26/mo; M2-3c-2) — plus whatever depends on them (the
-# ECS hello service and its task SG get swept in automatically as dependents).
-# Everything free stays untouched: VPC/subnets, Cognito (users + MFA
-# enrollments!), ECR (pushed images survive), ECS cluster/task definition/IAM
-# roles, CloudWatch logs, budget alarm.
+# charge — the ALB (+WAF, ~$22/mo combined), the API Gateway stack, the VPC
+# interface endpoints (~$26/mo; M2-3c-2), the three real services (M2-4-3;
+# their tasks + TGs + listener rules; task definitions/IAM/log groups are
+# free but recreate cleanly) and the Valkey cache (~$6/mo floor; EPHEMERAL —
+# fencing locks live 6 s, so destroying it loses nothing) — plus whatever
+# depends on them (the ECS hello service and its task SG get swept in
+# automatically as dependents). Everything free stays untouched: VPC/subnets,
+# Cognito (users + MFA enrollments!), ECR (pushed images survive), ECS
+# cluster, CloudWatch logs, budget alarm.
 #
 # THE DATABASE (module.rds) IS DELIBERATELY NOT A TARGET — PERMANENT RULE
 # (M2-4-2). It is STATEFUL: destroying it deletes operational data. There is
@@ -110,7 +113,11 @@ jobs:
           terraform destroy -input=false -auto-approve -no-color \
             -target=module.alb \
             -target=module.apigw \
-            -target=module.endpoints
+            -target=module.endpoints \
+            -target=module.service_command \
+            -target=module.service_telemetry \
+            -target=module.service_fleet \
+            -target=module.valkey
 
       - name: Show what remains in the stack
         run: |

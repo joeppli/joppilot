@@ -44,3 +44,9 @@ variable "enable_waf" {
   type        = bool
   default     = true
 }
+
+variable "service_desired_count" {
+  description = "INITIAL task count for each real service (command/telemetry/fleet) on create. After that, start/stop manually — Terraform ignores the count (same rule as hello-world)."
+  type        = number
+  default     = 1
+}
