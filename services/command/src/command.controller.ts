@@ -47,6 +47,13 @@ export class CommandController {
     if (!result) {
       throw new UnauthorizedException('Vehicle is currently locked by another operator.');
     }
+    // LEG-05/SEC-06: acquiring control is a critical action — "who, when,
+    // with which authorization" must be traceable. tokenId ties this row to
+    // every later command envelope carrying the same fencing token.
+    await this.logEdr(uuidv4(), vehicleId, operatorId, 'TAKE_CONTROL', 'ACK', {
+      tokenId: result.token,
+      issuedAt: result.issuedAt,
+    });
     return { status: 'success', token: result.token, issuedAt: result.issuedAt };
   }
 

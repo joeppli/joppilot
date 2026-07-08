@@ -50,16 +50,27 @@ export class AssignmentService {
   }
 
   async assign(vehicleId: string, operatorId: string, assignedBy: string) {
-    const existing = await this.prisma.vehicleAssignment.findFirst({
-      where: { vehicleId, operatorId, active: true },
-    });
-    if (existing) return { assignmentId: existing.id, alreadyAssigned: true };
+    return this.prisma.$transaction(async (tx) => {
+      // Serialize concurrent assigns for the same (vehicle, operator) pair.
+      // A partial unique index (WHERE active) would be the declarative fix,
+      // but Prisma cannot model one — a raw index would surface as schema
+      // drift on every future `migrate dev`. A pg transaction-scoped advisory
+      // lock closes the findFirst→create race without touching the schema.
+      // ($executeRaw, not $queryRaw: the function returns `void`, which
+      // Prisma cannot deserialize as a result column.)
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${vehicleId}:${operatorId}`}))`;
 
-    const row = await this.prisma.vehicleAssignment.create({
-      data: { vehicleId, operatorId, assignedBy },
+      const existing = await tx.vehicleAssignment.findFirst({
+        where: { vehicleId, operatorId, active: true },
+      });
+      if (existing) return { assignmentId: existing.id, alreadyAssigned: true };
+
+      const row = await tx.vehicleAssignment.create({
+        data: { vehicleId, operatorId, assignedBy },
+      });
+      this.logger.log(`ASSIGN ${operatorId} → ${vehicleId} by ${assignedBy}`);
+      return { assignmentId: row.id, alreadyAssigned: false };
     });
-    this.logger.log(`ASSIGN ${operatorId} → ${vehicleId} by ${assignedBy}`);
-    return { assignmentId: row.id, alreadyAssigned: false };
   }
 
   /**
