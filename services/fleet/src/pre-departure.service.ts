@@ -23,6 +23,11 @@ export class PreDepartureService {
   constructor(private readonly prisma: PrismaService) {}
 
   async createChecklist(vehicleId: string): Promise<{ checklistId: string; items: CheckItem[] }> {
+    // DEV-13 (accepted deviation): SELF_DIAGNOSIS items are auto-PASS
+    // placeholders — the sim edge has no fault injection yet. ICD §7 requires
+    // these results to come from the vehicle's live self-diagnosis; wire them
+    // to vehicle health (sensor status / DTC from telemetry) in M4-4 when a
+    // real vehicle reports real faults. Tracked in the architecture register.
     const items: CheckItem[] = DEFAULT_CHECKLIST.map((tpl) => ({
       ...tpl,
       status: tpl.source === 'SELF_DIAGNOSIS' ? 'PASS' : 'PENDING',
@@ -49,6 +54,14 @@ export class PreDepartureService {
       const items = record.items as CheckItem[];
       const item = items.find((i) => i.itemId === itemId);
       if (!item) throw new Error(`Item ${itemId} not found`);
+
+      // ICD §7: self-diagnosis results come from the VEHICLE; the operator
+      // verifies only the items self-diagnosis does not cover. Letting the
+      // operator overwrite a self-diagnosis result would break the evidence
+      // chain (who established this item's state).
+      if (item.source !== 'OPERATOR') {
+        throw new Error(`Item ${itemId} is reported by vehicle self-diagnosis and cannot be set by the operator`);
+      }
 
       item.status = status;
       if (detail) item.detail = detail;

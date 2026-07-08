@@ -61,7 +61,13 @@ export class ManeuverService implements OnModuleInit {
   }
 
   private async handleIncoming(topic: string, raw: Buffer) {
-    const msg = JSON.parse(raw.toString());
+    let msg: unknown;
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      this.logger.warn(`Dropped non-JSON maneuver message on ${topic}`);
+      return;
+    }
 
     if (topic.includes('/maneuver/proposal')) {
       await this.handleProposal(msg);
@@ -121,17 +127,21 @@ export class ManeuverService implements OnModuleInit {
       this.resolveProposal(update.proposalId);
     }
 
-    // Update EDR
+    // Append-only EDR (LEG-04/SEC-06): the status transition is a NEW record
+    // correlated by the same commandId; the PENDING proposal row stays intact.
     try {
-      await this.prisma.eventDataRecord.update({
-        where: { commandId: `proposal-${update.proposalId}` },
+      await this.prisma.eventDataRecord.create({
         data: {
+          commandId: `proposal-${update.proposalId}`,
+          vehicleId: update.vehicleId,
+          issuer: 'ADS',
+          action: 'MANEUVER_STATUS',
           status: update.status,
           details: JSON.parse(JSON.stringify(update)),
         },
       });
     } catch {
-      this.logger.warn(`EDR update failed for proposal ${update.proposalId} (may not exist)`);
+      this.logger.warn(`EDR append failed for proposal ${update.proposalId}`);
     }
 
     this.statusListeners.forEach(fn => fn(update));

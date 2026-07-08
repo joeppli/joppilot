@@ -3,7 +3,7 @@ import * as mqtt from 'mqtt';
 import * as fs from 'fs';
 import { TelemetryWriterService } from './telemetry-writer.service';
 import { TelemetryGateway } from './telemetry.gateway';
-import { TelemetryPayload, HeartbeatSchema } from '@joppilot/contract';
+import { TelemetryPayloadSchema, HeartbeatSchema } from '@joppilot/contract';
 
 // Heartbeat is expected ~1Hz from the vehicle. Loss is evaluated over several
 // windows so sporadic packet loss does not raise a false alarm (ICD §9).
@@ -62,23 +62,32 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     // Window-based link/safe-mode monitor (ICD §9).
     this.linkMonitor = setInterval(() => this.evaluateLinks(), HEARTBEAT_PERIOD_MS);
 
-    this.client.on('message', async (topic, message) => {
-      if (topic.endsWith('/heartbeat')) {
-        this.handleHeartbeat(message);
-        return;
-      }
-      if (topic.endsWith('/telemetry')) {
-        try {
-          const payload = JSON.parse(message.toString()) as TelemetryPayload;
+    // NOTE: handler is deliberately synchronous and fully wrapped — a single
+    // malformed MQTT message (untrusted network input) must never become an
+    // unhandled rejection that kills the fleet's link-loss monitoring.
+    this.client.on('message', (topic, message) => {
+      try {
+        if (topic.endsWith('/heartbeat')) {
+          this.handleHeartbeat(message);
+          return;
+        }
+        if (topic.endsWith('/telemetry')) {
+          // Validate against the contract — never trust-cast wire input.
+          const parsed = TelemetryPayloadSchema.safeParse(JSON.parse(message.toString()));
+          if (!parsed.success) {
+            this.logger.warn(`Dropped malformed telemetry: ${parsed.error.issues[0]?.message ?? 'schema error'}`);
+            return;
+          }
+          const payload = parsed.data;
 
           // 1. Broadcast to Frontend via Socket.IO (low latency, RTP-02)
           this.telemetryGateway.broadcastTelemetry(payload.vehicleId, payload);
 
           // 2. Persist on the hot-path via batched raw insert (AD-14, ORM bypassed)
           this.writer.enqueue(payload);
-        } catch(e) {
-          this.logger.error('Failed to parse/save Telemetry', e);
         }
+      } catch (e) {
+        this.logger.error(`Failed to process MQTT message on ${topic}`, e as Error);
       }
     });
 

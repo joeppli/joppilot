@@ -59,6 +59,12 @@ client.on('connect', async () => {
   const b = base({ mode: 'MODE2', payload: { action: 'STEER', angle: -1.5 }, token: { tokenId: uuid(), issuedAt: Date.now() - 1 } });
   pub(T.cmd, b); check('mode2-on-public', await waitAck(b.commandId), 'REJECTED', 'MODE_MISMATCH');
 
+  // ICD §1: a Mode 2 driving command MISLABELLED as MODE1 must not ride the
+  // Mode 1 allowance through the zone matrix — the edge derives the mode from
+  // the action itself (mode-action consistency, audit-5 finding 1).
+  const b2 = base({ mode: 'MODE1', payload: { action: 'DRIVE', throttle: 20, brake: 0 }, token: { tokenId: uuid(), issuedAt: Date.now() - 1 } });
+  pub(T.cmd, b2); check('mode-spoof-drive-as-mode1', await waitAck(b2.commandId), 'REJECTED', 'MODE_MISMATCH');
+
   const aTok = Date.now() + 100;
   const a = base({ token: { tokenId: uuid(), issuedAt: aTok } });
   pub(T.cmd, a); check('valid-mode1', await waitAck(a.commandId), 'ACK');

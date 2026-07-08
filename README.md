@@ -23,10 +23,10 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 
 ### Implemented so far (all per ICD / architecture, smoke-tested)
 
-- **Two-gate command path** — cloud Gate 1 (Zod + zone/mode filter + fencing token) → MQTT → edge Gate 2 (JSON-Schema validation, TTL, monotonic token, idempotency/dedup, zone-mode matrix).
-- **Latched safe-stop & local watchdog** (RES-01/04) — 3 s cloud silence → autonomous safe-stop latch; only `CLEAR_SAFE_STOP` releases it.
+- **Two-gate command path** — cloud Gate 1 (Zod + zone/mode filter + fencing token; the mode is **derived from the action server-side**, never client-supplied) → MQTT → edge Gate 2 (JSON-Schema validation, TTL, monotonic token, idempotency/dedup with a bounded store, **mode↔action consistency**, zone-mode matrix). The schema load is fail-closed: an edge that cannot validate commands refuses to start.
+- **Latched safe-stop & local watchdog** (RES-01/03/04) — 3 s cloud silence → autonomous safe-stop latch; **leaving the approved territory latches autonomously too** (geofence trigger, RES-03), commands merely observe it. Only `CLEAR_SAFE_STOP` releases the latch. Every latch transition seen in the heartbeat is appended to the EDR (cloud-side interim record until the on-vehicle log + sync lands in M3-6).
 - **Maneuver proposal flow** (ICD §6) — edge generates a proposal → cloud `Maneuver` service + decision window → console card → operator decision returns as a regular Mode 1 command; timeout → safe default (edge authoritative).
-- **Pre-departure check** (ICD §7 / LEG-03) — OAD checklist (self-diagnosis auto-pass + operator verification), safety-critical fail blocks confirmation, mission cannot start unconfirmed.
+- **Pre-departure check** (ICD §7 / LEG-03) — OAD checklist (self-diagnosis auto-pass — a **DEV-13** placeholder until M4-4 wires live vehicle health — + operator verification; operators cannot overwrite self-diagnosis items), safety-critical fail blocks confirmation, and mission start is **fail-closed**: no confirmed checklist (including a missing one) → no start.
 - **Mission lifecycle** — `PENDING → PRE_CHECK → ACTIVE → PAUSED → COMPLETED / ABORTED`.
 - **Disruptive-diagnostic deferral** (ICD §1 footnote) — `RESTART_*` / `UPDATE_CONFIG` deferred on a public approved route unless the vehicle is stationary; edge enforces it from live road speed.
 - **Single-operator lock + handover** (ICD §8 / SEC-05) — fencing token in Valkey; a handover elevates the token so the previous operator's commands are rejected on the vehicle.
@@ -114,7 +114,7 @@ Then open **http://localhost:3000**.
 With infra + all services + the edge running:
 
 ```bash
-# Edge Gate-2 smoke test — expect 10/10 pass
+# Edge Gate-2 smoke test — expect 11/11 pass
 node services/command/test/smoke-edge.cjs
 
 # Maneuver proposal end-to-end (ICD §6) — expect 11/11 pass

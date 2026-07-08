@@ -34,12 +34,13 @@ export const VehicleStateSchema = z.enum([
 // `diagRead` : diagnostic read allowed (always true per ICD).
 // `diagActions` : disruptive diagnostic actions (restart) allowed.
 //
-// DUPLICATION WARNING: the edge safety kernel re-implements this matrix in
-// edge/sim/src/main.rs (`mode_allowed_in_zone` / `diag_disruptive_allowed`)
-// because Rust cannot import TS. If the ICD §1 matrix changes, change BOTH
-// and re-run services/command/test/smoke-edge.cjs. Planned fix (M3-1): emit
-// the matrix as generated JSON alongside the other schemas so the edge loads
-// it at startup instead of hardcoding it.
+// DUPLICATION WARNING: the edge safety kernel re-implements this matrix AND
+// the action→mode classification in edge/sim/src/main.rs (`mode_allowed_in_zone`
+// / `diag_disruptive_allowed` / `infer_mode`) because Rust cannot import TS.
+// If the ICD §1 matrix or the §4 command catalogue changes, change BOTH and
+// re-run services/command/test/smoke-edge.cjs. Planned fix (M3-1): emit the
+// matrix as generated JSON alongside the other schemas so the edge loads it
+// at startup instead of hardcoding it.
 // ------------------------------------------------------------------
 export interface ZonePermissions {
   mode1: boolean;
@@ -154,7 +155,7 @@ export const CreepCommandSchema = z.object({ action: z.literal('CREEP'), speedKm
 export const TurnCommandSchema = z.object({ action: z.literal('TURN'), direction: z.enum(['LEFT', 'RIGHT', 'STRAIGHT']) });
 export const ParkCommandSchema = z.object({ action: z.literal('PARK'), engage: z.boolean() });
 export const LightsCommandSchema = z.object({ action: z.literal('LIGHTS'), state: z.enum(['OFF', 'LOW', 'HIGH', 'HAZARD', 'BLINK_LEFT', 'BLINK_RIGHT']) });
-export const HornCommandSchema = z.object({ action: z.literal('HORN'), durationMs: z.number().max(5000) });
+export const HornCommandSchema = z.object({ action: z.literal('HORN'), durationMs: z.number().int().min(0).max(5000) });
 export const SpeakerCommandSchema = z.object({ action: z.literal('SPEAKER'), message: z.string() });
 
 // ------------------------------------------------------------------

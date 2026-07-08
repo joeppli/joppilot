@@ -60,9 +60,16 @@ export class FleetController {
   ) {
     try {
       const mission = await this.missions.create(vehicleId, routeId);
-      const checklist = await this.preDeparture.createChecklist(vehicleId);
-      await this.missions.linkChecklist(mission.id, checklist.checklistId);
-      return { mission: { ...mission, status: 'PRE_CHECK' }, checklist };
+      try {
+        const checklist = await this.preDeparture.createChecklist(vehicleId);
+        await this.missions.linkChecklist(mission.id, checklist.checklistId);
+        return { mission: { ...mission, status: 'PRE_CHECK' }, checklist };
+      } catch (e) {
+        // Never leave a checklist-less mission behind: it could not start
+        // anyway (LEG-03 fail-closed) but would block the vehicle's slot.
+        await this.missions.abort(mission.id).catch(() => undefined);
+        throw e;
+      }
     } catch (e) {
       throw new BadRequestException(e.message);
     }
