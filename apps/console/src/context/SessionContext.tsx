@@ -211,12 +211,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [fleetGet, vehicleId]);
 
   // ── E-STOP keyboard (ACC-04) ──
+  // Space is also the standard activation key for a focused control. The
+  // global shortcut therefore fires only from NON-interactive context —
+  // otherwise Space on e.g. a focused "Throttle" button would be swallowed
+  // and fire E-STOP instead, breaking full keyboard operability (ACC-04)
+  // and turning routine keyboard use into accidental emergency stops.
   useEffect(() => {
+    const INTERACTIVE = ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'];
     const h = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && token && (e.target as HTMLElement)?.tagName !== 'INPUT') {
-        e.preventDefault();
-        cmdPost('estop');
-      }
+      if (e.code !== 'Space' || !token) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (INTERACTIVE.includes(el.tagName) || el.isContentEditable)) return;
+      e.preventDefault();
+      cmdPost('estop');
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);

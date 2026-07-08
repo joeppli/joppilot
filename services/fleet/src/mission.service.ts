@@ -39,12 +39,18 @@ export class MissionService {
     });
     if (!mission) throw new Error('Mission not found');
 
-    const validFrom: MissionStatus[] = ['PENDING', 'PRE_CHECK'];
+    // Only PRE_CHECK may start: a PENDING mission has no checklist linked yet,
+    // and LEG-03 makes the pre-departure check mandatory before EVERY operation.
+    const validFrom: MissionStatus[] = ['PRE_CHECK'];
     if (!validFrom.includes(mission.status as MissionStatus)) {
       throw new Error(`Cannot start mission in status ${mission.status}`);
     }
 
-    if (mission.checklist && mission.checklist.status !== 'CONFIRMED') {
+    // FAIL-CLOSED (LEG-03/ICD §7): no confirmed checklist → no start. A missing
+    // checklist must block exactly like an unconfirmed one, otherwise any path
+    // that leaves a mission without a checklist (e.g. a failed link step)
+    // silently skips the legally mandatory check.
+    if (!mission.checklist || mission.checklist.status !== 'CONFIRMED') {
       throw new Error('Cannot start: pre-departure check not confirmed');
     }
 

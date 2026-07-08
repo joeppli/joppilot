@@ -5,6 +5,14 @@ import { PrismaService } from './prisma.service';
 import { v4 as uuidv4 } from 'uuid';
 import { CommandEnvelope } from '@joppilot/contract';
 
+// Redis lock value. Stored as JSON — a delimiter format would break on an
+// operatorId containing the delimiter (client-supplied input).
+interface VehicleLock {
+  op: string;
+  token: string;
+  issuedAt: number;
+}
+
 @Injectable()
 export class SessionService {
   private readonly logger = new Logger(SessionService.name);
@@ -16,12 +24,22 @@ export class SessionService {
     private readonly prisma: PrismaService
   ) {}
 
+  private parseLock(raw: string | null): VehicleLock | null {
+    if (!raw) return null;
+    try {
+      const o = JSON.parse(raw);
+      if (typeof o?.op === 'string' && typeof o?.token === 'string' && typeof o?.issuedAt === 'number') return o;
+    } catch { /* fall through */ }
+    return null;
+  }
+
   async takeControl(vehicleId: string, operatorId: string): Promise<{ token: string; issuedAt: number } | null> {
     const lockKey = `lock:vehicle:${vehicleId}`;
     const token = uuidv4();
     const issuedAt = Date.now();
+    const lock: VehicleLock = { op: operatorId, token, issuedAt };
 
-    const acquired = await this.redis.getClient().set(lockKey, `${operatorId}:${token}:${issuedAt}`, 'EX', 6, 'NX');
+    const acquired = await this.redis.getClient().set(lockKey, JSON.stringify(lock), 'EX', 6, 'NX');
 
     if (acquired) {
       this.logger.log(`Operator ${operatorId} took control of ${vehicleId} with token ${token}`);
@@ -35,11 +53,10 @@ export class SessionService {
 
   async heartbeat(vehicleId: string, operatorId: string, token: string): Promise<boolean> {
     const lockKey = `lock:vehicle:${vehicleId}`;
-    const currentLock = await this.redis.getClient().get(lockKey);
-    if (!currentLock) return false;
+    const lock = this.parseLock(await this.redis.getClient().get(lockKey));
+    if (!lock) return false;
 
-    const [storedOp, storedToken] = currentLock.split(':');
-    if (storedOp === operatorId && storedToken === token) {
+    if (lock.op === operatorId && lock.token === token) {
       await this.redis.getClient().expire(lockKey, 6);
       this.resetDeadmanTimer(vehicleId, operatorId, token);
       return true;
@@ -82,13 +99,13 @@ export class SessionService {
 
   async handover(vehicleId: string, newOperatorId: string): Promise<{ token: string; issuedAt: number } | null> {
     const lockKey = `lock:vehicle:${vehicleId}`;
-    const currentLock = await this.redis.getClient().get(lockKey);
-    const previousOperator = currentLock ? currentLock.split(':')[0] : 'none';
+    const previousOperator = this.parseLock(await this.redis.getClient().get(lockKey))?.op ?? 'none';
 
     const token = uuidv4();
     const issuedAt = Date.now();
+    const lock: VehicleLock = { op: newOperatorId, token, issuedAt };
 
-    await this.redis.getClient().set(lockKey, `${newOperatorId}:${token}:${issuedAt}`, 'EX', 6);
+    await this.redis.getClient().set(lockKey, JSON.stringify(lock), 'EX', 6);
 
     this.logger.log(`HANDOVER: ${previousOperator} → ${newOperatorId} on ${vehicleId} (token elevated)`);
     this.resetDeadmanTimer(vehicleId, newOperatorId, token);
@@ -130,18 +147,12 @@ export class SessionService {
 
   async validateToken(vehicleId: string, operatorId: string, token: string): Promise<boolean> {
     const lockKey = `lock:vehicle:${vehicleId}`;
-    const currentLock = await this.redis.getClient().get(lockKey);
-    if (!currentLock) return false;
-    const [storedOp, storedToken] = currentLock.split(':');
-    return storedOp === operatorId && storedToken === token;
+    const lock = this.parseLock(await this.redis.getClient().get(lockKey));
+    return !!lock && lock.op === operatorId && lock.token === token;
   }
 
   async getTokenIssuedAt(vehicleId: string): Promise<number> {
     const lockKey = `lock:vehicle:${vehicleId}`;
-    const currentLock = await this.redis.getClient().get(lockKey);
-    if (!currentLock) return Date.now();
-    const parts = currentLock.split(':');
-    const ms = parseInt(parts[2], 10);
-    return isNaN(ms) ? Date.now() : ms;
+    return this.parseLock(await this.redis.getClient().get(lockKey))?.issuedAt ?? Date.now();
   }
 }

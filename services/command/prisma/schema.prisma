@@ -16,9 +16,15 @@ datasource db {
 // raw batched inserts in the telemetry service (Architecture AD-14). The command
 // service owns only the EDR/audit table below, so this is now the single Prisma
 // schema in the monorepo (no shared-client duplication).
+// APPEND-ONLY (LEG-04/SEC-06, August EDR design note in the timeline): a
+// status transition is written as a NEW record, never an in-place update —
+// the Postgres EDR is the queryable working copy of an audit trail whose
+// immutable evidence copy lands in S3 Object Lock (August). commandId is
+// therefore a correlation key, NOT unique: one command yields one PENDING
+// row plus one row per ACK/NACK/status transition.
 model EventDataRecord {
   id          String   @id @default(uuid())
-  commandId   String   @unique
+  commandId   String
   vehicleId   String
   issuer      String
   action      String
@@ -26,4 +32,6 @@ model EventDataRecord {
   details     Json?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@index([commandId])
 }

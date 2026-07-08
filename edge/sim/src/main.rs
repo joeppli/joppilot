@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time;
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs;
 use jsonschema::JSONSchema;
@@ -228,6 +228,21 @@ fn mode_allowed_in_zone(zone: &str, mode: &OperationMode) -> bool {
     }
 }
 
+/// Mirror of contract `inferMode` (ICD §4 command catalogue).
+///
+/// The authoritative gate derives the operation mode from the ACTION itself and
+/// refuses an envelope whose declared `mode` disagrees (ICD §1: the cloud link
+/// "can drop, be delayed, or be spoofed" — a spoofed/buggy cloud must not be
+/// able to smuggle a Mode 2 driving command onto a public route by labelling
+/// it MODE1). Same DUPLICATION WARNING as `mode_allowed_in_zone` applies.
+fn infer_mode(action: &str) -> OperationMode {
+    match action {
+        "STEER" | "DRIVE" | "SELECT_DIRECTION" | "CREEP" | "TURN" | "PARK" => OperationMode::MODE2,
+        "RESTART_SERVICE" | "RESTART_COMPUTER" | "RESTART_SENSOR" | "UPDATE_CONFIG" | "PULL_LOGS" => OperationMode::DIAG,
+        _ => OperationMode::MODE1,
+    }
+}
+
 fn is_diag_disruptive(action: &str) -> bool {
     matches!(action, "RESTART_SERVICE" | "RESTART_COMPUTER" | "RESTART_SENSOR" | "UPDATE_CONFIG")
 }
@@ -243,6 +258,25 @@ fn diag_disruptive_allowed(action: &str, zone: &str, is_stationary: bool) -> boo
         "out_of_tod" => false,
         "public_approved_route" => is_stationary,
         _ => true, // public_test_permit, depot, private, permitted_test
+    }
+}
+
+// Idempotency/dedup store (ICD §4). Bounded: dedup only matters within the
+// command TTL window (seconds), so a FIFO cap protects the safety kernel from
+// unbounded memory growth over a long operation (AD-16: deterministic kernel).
+const DEDUP_CAP: usize = 4096;
+type DedupStore = Mutex<(HashMap<String, String>, VecDeque<String>)>;
+
+/// Store the exact ack for a command_id so a duplicate replays the SAME response.
+fn remember_ack(store: &DedupStore, cid: &str, ack: &str) {
+    let mut s = store.lock().unwrap();
+    if s.0.insert(cid.to_string(), ack.to_string()).is_none() {
+        s.1.push_back(cid.to_string());
+        if s.1.len() > DEDUP_CAP {
+            if let Some(oldest) = s.1.pop_front() {
+                s.0.remove(&oldest);
+            }
+        }
     }
 }
 
@@ -273,20 +307,28 @@ async fn main() {
 
     // --- Load the command JSON Schema from the contract (CONTRACT.md) ---
     // The safety kernel validates every command against the contract schema.
+    // FAIL-CLOSED: a safety kernel that cannot validate commands against the
+    // contract must not run at all (ICD §4: the vehicle re-validates every
+    // command). Starting with the SCHEMA_INVALID gate disabled would silently
+    // weaken the authoritative 2nd gate.
     let schema_path = env::var("EDGE_SCHEMA_PATH")
         .unwrap_or_else(|_| "../../packages/contract/schemas/CommandEnvelope.json".to_string());
-    let command_schema: Option<Arc<JSONSchema>> = match fs::read_to_string(&schema_path) {
-        Ok(raw) => match serde_json::from_str::<Value>(&raw) {
-            Ok(v) => match JSONSchema::compile(&v) {
-                Ok(c) => {
-                    println!("Loaded command schema from {}", schema_path);
-                    Some(Arc::new(c))
-                }
-                Err(e) => { eprintln!("⚠️ Failed to compile schema: {}. SCHEMA_INVALID gate disabled.", e); None }
-            },
-            Err(e) => { eprintln!("⚠️ Failed to parse schema JSON: {}. SCHEMA_INVALID gate disabled.", e); None }
-        },
-        Err(e) => { eprintln!("⚠️ Could not read schema at {}: {}. SCHEMA_INVALID gate disabled.", schema_path, e); None }
+    let command_schema: JSONSchema = {
+        let raw = fs::read_to_string(&schema_path).unwrap_or_else(|e| {
+            eprintln!("⛔ Could not read command schema at {}: {}. Refusing to start (fail-closed).", schema_path, e);
+            std::process::exit(1);
+        });
+        let v: Value = serde_json::from_str(&raw).unwrap_or_else(|e| {
+            eprintln!("⛔ Failed to parse schema JSON: {}. Refusing to start (fail-closed).", e);
+            std::process::exit(1);
+        });
+        match JSONSchema::compile(&v) {
+            Ok(c) => { println!("Loaded command schema from {}", schema_path); c }
+            Err(e) => {
+                eprintln!("⛔ Failed to compile schema: {}. Refusing to start (fail-closed).", e);
+                std::process::exit(1);
+            }
+        }
     };
 
     let aws_endpoint = env::var("AWS_IOT_ENDPOINT").unwrap_or_default();
@@ -337,7 +379,7 @@ async fn main() {
     // Newest fencing-token issuedAt the vehicle has seen (ICD §4/§8 single-operator lock).
     let newest_token = Arc::new(Mutex::new(0u64));
     // Idempotency store: command_id → exact ack json (ICD §4 "applied once, same response").
-    let seen_commands: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let seen_commands: Arc<DedupStore> = Arc::new(Mutex::new((HashMap::new(), VecDeque::new())));
     // Cloud liveness for the local watchdog.
     let last_contact_time = Arc::new(Mutex::new(now_ms()));
     // The watchdog only arms after the FIRST cloud contact: a vehicle that has
@@ -410,6 +452,22 @@ async fn main() {
                 };
 
                 let zone = effective_zone(lat, lng, &zone_for_telemetry);
+
+                // RES-03: a zone/geofence violation is ITSELF a safe-mode
+                // trigger — latch autonomously the moment the vehicle leaves
+                // approved territory. Do not wait for an inbound command to
+                // observe it (the command-path check in the main loop only
+                // covers the case where something happens to arrive).
+                let is_latched = if zone == "out_of_tod" && !is_latched {
+                    *latch_for_telemetry.lock().unwrap() = true;
+                    *speed_for_telemetry.lock().unwrap() = 0.0;
+                    speed = 0.0;
+                    println!("⚠️ GEOFENCE VIOLATION at ({:.4},{:.4}) → latched SAFE-STOP (RES-03).", lat, lng);
+                    true
+                } else {
+                    is_latched
+                };
+
                 let state = if is_latched { "SAFE_STOPPED" } else { "IDLE" };
 
                 let payload = TelemetryPayload {
@@ -600,14 +658,12 @@ async fn main() {
                 Ok(v) => v,
                 Err(_) => { eprintln!("⛔ Dropped non-JSON payload on {}", p.topic); continue; }
             };
-            if let Some(schema) = &command_schema {
-                if schema.validate(&raw).is_err() {
-                    let cid = raw.get("commandId").and_then(|v| v.as_str()).unwrap_or("unknown");
-                    println!("⛔ COMMAND REJECTED! Schema invalid. ID: {}", cid);
-                    let ack = ack_json(cid, "REJECTED", Some("SCHEMA_INVALID"));
-                    client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
-                    continue;
-                }
+            if command_schema.validate(&raw).is_err() {
+                let cid = raw.get("commandId").and_then(|v| v.as_str()).unwrap_or("unknown");
+                println!("⛔ COMMAND REJECTED! Schema invalid. ID: {}", cid);
+                let ack = ack_json(cid, "REJECTED", Some("SCHEMA_INVALID"));
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                continue;
             }
 
             let envelope: CommandEnvelope = match serde_json::from_value(raw) {
@@ -619,7 +675,7 @@ async fn main() {
 
             // 2) Idempotency (DUPLICATE_COMMAND, ICD §4) --------------------
             // A repeated command_id is applied once and gets the SAME response.
-            if let Some(prev) = seen_commands.lock().unwrap().get(&cid).cloned() {
+            if let Some(prev) = seen_commands.lock().unwrap().0.get(&cid).cloned() {
                 println!("↩️  DUPLICATE command {} → replaying stored ACK", cid);
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, prev).await.unwrap();
                 continue;
@@ -633,7 +689,7 @@ async fn main() {
             if now > envelope.timestamp + envelope.ttl_ms {
                 println!("⛔ COMMAND REJECTED! TTL expired. ID: {}", cid);
                 let ack = ack_json(&cid, "REJECTED", Some("TTL_EXPIRED"));
-                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                remember_ack(&seen_commands, &cid, &ack);
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                 continue;
             }
@@ -645,7 +701,7 @@ async fn main() {
                     drop(newest);
                     println!("⛔ COMMAND REJECTED! Stale fencing token. ID: {}", cid);
                     let ack = ack_json(&cid, "REJECTED", Some("INVALID_TOKEN"));
-                    seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                    remember_ack(&seen_commands, &cid, &ack);
                     client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                     continue;
                 }
@@ -653,6 +709,9 @@ async fn main() {
             }
 
             // E-STOP and SAFE_STOP always engage the latch and ACK (highest priority).
+            // E-STOP / SAFE_STOP are handled BEFORE the mode-consistency check
+            // on purpose: refusing a stop command over a label mismatch would
+            // fail in the unsafe direction. Stopping is always safe to apply.
             let is_estop = p.topic == estop_topic || action == "E_STOP";
             let is_safe_stop = action == "SAFE_STOP";
 
@@ -661,7 +720,22 @@ async fn main() {
                 let tag = if is_estop { "🚨 E-STOP" } else { "🛑 SAFE-STOP" };
                 println!("{} APPLIED → latched. ID: {}", tag, cid);
                 let ack = ack_json(&cid, "ACK", None);
-                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                remember_ack(&seen_commands, &cid, &ack);
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                continue;
+            }
+
+            // 4b) Mode ↔ action consistency (MODE_MISMATCH, ICD §1/§4) -----
+            // The declared envelope mode is untrusted input. The vehicle
+            // derives the mode from the action itself, so a Mode 2 driving
+            // command mislabelled MODE1 can never ride the Mode 1 allowance
+            // through the zone matrix below.
+            let inferred_mode = infer_mode(&action);
+            if envelope.mode != inferred_mode {
+                println!("⛔ COMMAND REJECTED! Declared mode {:?} != inferred {:?} for action '{}'. ID: {}",
+                    envelope.mode, inferred_mode, action, cid);
+                let ack = ack_json(&cid, "REJECTED", Some("MODE_MISMATCH"));
+                remember_ack(&seen_commands, &cid, &ack);
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                 continue;
             }
@@ -676,13 +750,13 @@ async fn main() {
                         drop(l);
                         println!("🔓 SAFE-STOP latch released by authorized CLEAR_SAFE_STOP. ID: {}", cid);
                         let ack = ack_json(&cid, "ACK", None);
-                        seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                        remember_ack(&seen_commands, &cid, &ack);
                         client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                     } else {
                         drop(l);
                         println!("⛔ COMMAND REJECTED! Vehicle is in latched safe-stop. ID: {}", cid);
                         let ack = ack_json(&cid, "REJECTED", Some("SAFE_STOP_LATCHED"));
-                        seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                        remember_ack(&seen_commands, &cid, &ack);
                         client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                     }
                     continue;
@@ -692,7 +766,7 @@ async fn main() {
             // A CLEAR_SAFE_STOP while not latched is a harmless no-op ACK.
             if action == "CLEAR_SAFE_STOP" {
                 let ack = ack_json(&cid, "ACK", None);
-                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                remember_ack(&seen_commands, &cid, &ack);
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                 continue;
             }
@@ -706,7 +780,7 @@ async fn main() {
                 *latched.lock().unwrap() = true;
                 println!("⛔ COMMAND REJECTED! Outside approved zone ({:.4},{:.4}) → latched SAFE-STOP. ID: {}", lat, lng, cid);
                 let ack = ack_json(&cid, "REJECTED", Some("GEOFENCE_VIOLATION"));
-                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                remember_ack(&seen_commands, &cid, &ack);
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                 continue;
             }
@@ -715,7 +789,7 @@ async fn main() {
                 // e.g. Mode 2 on a public approved route → the vehicle refuses.
                 println!("⛔ COMMAND REJECTED! Mode {:?} not allowed in zone '{}'. ID: {}", envelope.mode, zone, cid);
                 let ack = ack_json(&cid, "REJECTED", Some("MODE_MISMATCH"));
-                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                remember_ack(&seen_commands, &cid, &ack);
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                 continue;
             }
@@ -726,7 +800,7 @@ async fn main() {
             if !diag_disruptive_allowed(&action, &zone, is_stationary) {
                 println!("⛔ COMMAND REJECTED! Disruptive diag '{}' deferred (zone '{}', speed-stationary={}). ID: {}", action, zone, is_stationary, cid);
                 let ack = ack_json(&cid, "REJECTED", Some("DIAG_DEFERRED"));
-                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                remember_ack(&seen_commands, &cid, &ack);
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                 continue;
             }
@@ -749,7 +823,7 @@ async fn main() {
                     drop(prop);
                     println!("⛔ MANEUVER DECISION for unknown/expired proposal '{}'. ID: {}", decision_proposal_id, cid);
                     let ack = ack_json(&cid, "REJECTED", Some("SCHEMA_INVALID"));
-                    seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                    remember_ack(&seen_commands, &cid, &ack);
                     client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                     continue;
                 }
@@ -767,7 +841,7 @@ async fn main() {
                     action, resolved_option, decision_proposal_id, cid);
 
                 let ack = ack_json(&cid, "ACK", None);
-                seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+                remember_ack(&seen_commands, &cid, &ack);
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
 
                 let status = ManeuverStatusUpdate {
@@ -785,7 +859,7 @@ async fn main() {
             // 8) Accepted ------------------------------------------------
             println!("✅ COMMAND ACCEPTED '{}' mode={:?} zone='{}' ({:.4},{:.4}). ID: {}", action, envelope.mode, zone, lat, lng, cid);
             let ack = ack_json(&cid, "ACK", None);
-            seen_commands.lock().unwrap().insert(cid.clone(), ack.clone());
+            remember_ack(&seen_commands, &cid, &ack);
             client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
         }
     }

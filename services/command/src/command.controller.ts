@@ -65,8 +65,7 @@ export class CommandController {
     @Param('vehicleId') vehicleId: string,
     @Body('operatorId') operatorId: string,
     @Body('token') token: string,
-    @Body('payload') payload: unknown,
-    @Body('mode') modeOverride?: OperationMode
+    @Body('payload') payload: unknown
   ) {
     // 1. Single-operator lock (SEC-05 / ICD §8)
     const isValid = await this.sessionService.validateToken(vehicleId, operatorId, token);
@@ -78,7 +77,11 @@ export class CommandController {
       throw new BadRequestException({ reason: 'SCHEMA_INVALID', details: parsed.error.issues });
     }
     const cmd: CommandPayload = parsed.data;
-    const mode: OperationMode = modeOverride ?? inferMode(cmd.action);
+    // The mode is DERIVED from the action, never taken from the caller: a
+    // client-supplied mode label would let a Mode 2 driving command ride the
+    // Mode 1 allowance through the zone filter below (ICD §1). The edge
+    // re-derives and re-checks this independently (2nd gate).
+    const mode: OperationMode = inferMode(cmd.action);
 
     // 3. Zone/mode filter (1st gate, ICD §1). E-STOP / SAFE-STOP / CLEAR are
     //    valid in any zone and bypass the mode filter.
@@ -155,6 +158,14 @@ export class CommandController {
    * route (→ public_test_permit) requires a cantonal test permit; the
    * authorization comes from the permit (id + validity window), never from a
    * role flipping a rule at runtime. Admin-only (RolesGuard).
+   *
+   * DEV-14 (accepted deviation): reclassifying to OTHER Mode 2 zone types
+   * (depot/private/permitted_test) currently needs no permit artifact — an
+   * admin could mislabel a public location. The edge stays on its own zone
+   * config (fail-safe, DEV-8), so this cannot reach the vehicle today; it
+   * must be closed in M2-5 when zone config starts flowing to the vehicle:
+   * zone changes then only come from canton-approved zone definitions, not
+   * this free-form endpoint. Tracked in the architecture register.
    */
   @Roles('admin')
   @Post(':vehicleId/zone')

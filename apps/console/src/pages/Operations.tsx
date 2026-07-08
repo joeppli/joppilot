@@ -1,10 +1,17 @@
 import { Card, CardHeader, Button, Badge } from '../components/ui';
 import { useSession } from '../context/SessionContext';
+import { ZONE_MODE_MATRIX } from '@joppilot/contract';
 
 export function Operations() {
   const { telemetry: t, hasControl, operatorId, vehicleId, token, takeControl, cmdPost, estop } = useSession();
 
   const drive = (payload: object) => cmdPost('command', { payload });
+
+  // ICD §1: Joppilot (1st gate) "never shows a disallowed control to the
+  // operator" — Mode 2 driving controls only render in a zone whose matrix
+  // row permits Mode 2. The vehicle (2nd gate) re-checks regardless.
+  const zone = t?.currentZone;
+  const mode2Allowed = !!(zone && ZONE_MODE_MATRIX[zone]?.mode2);
 
   return (
     <div className="page">
@@ -29,14 +36,28 @@ export function Operations() {
         </Card>
 
         <Card>
-          <CardHeader title="Mode 2 commands" />
+          <CardHeader title="Driving & signalling" />
           <div className="card-pad">
-            <p className="text-sm muted" style={{ marginBottom: 12 }}>Direct driving — depot / private zone only.</p>
+            {mode2Allowed ? (
+              <>
+                <p className="text-sm muted" style={{ marginBottom: 12 }}>Mode 2 direct driving — permitted in zone '{zone}'.</p>
+                <div className="row gap-2 wrap" style={{ marginBottom: 12 }}>
+                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'STEER', angle: -5 })}>Steer left</Button>
+                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'STEER', angle: 5 })}>Steer right</Button>
+                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'DRIVE', throttle: 20, brake: 0 })}>Throttle</Button>
+                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'DRIVE', throttle: 0, brake: 50 })}>Brake</Button>
+                </div>
+              </>
+            ) : (
+              // ICD §1 first gate: a disallowed control is NOT shown. On a
+              // public approved route the law permits supervision, not
+              // remote driving — so no driving buttons exist to misclick.
+              <p className="text-sm muted" style={{ marginBottom: 12 }}>
+                Direct driving (Mode 2) is not available in zone '{zone ?? 'unknown'}' — supervision only (ICD §1).
+              </p>
+            )}
+            <p className="text-sm muted" style={{ marginBottom: 8 }}>Signalling (Mode 1 — valid in any operating zone):</p>
             <div className="row gap-2 wrap">
-              <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'STEER', angle: -5 })}>Steer left</Button>
-              <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'STEER', angle: 5 })}>Steer right</Button>
-              <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'DRIVE', throttle: 20, brake: 0 })}>Throttle</Button>
-              <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'DRIVE', throttle: 0, brake: 50 })}>Brake</Button>
               <Button size="sm" variant="ghost" disabled={!hasControl} onClick={() => drive({ action: 'HORN', durationMs: 500 })}>Horn</Button>
               <Button size="sm" variant="ghost" disabled={!hasControl} onClick={() => drive({ action: 'LIGHTS', state: 'HAZARD' })}>Hazard</Button>
             </div>
