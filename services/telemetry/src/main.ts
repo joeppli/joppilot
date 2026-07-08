@@ -24,4 +24,9 @@ async function bootstrap() {
   await app.listen(4001, '0.0.0.0');
   console.log(`Joppilot Telemetry Service running on http://localhost:4001`);
 }
-bootstrap();
+bootstrap().catch((err) => {
+  // A boot failure must be LOUD in the container logs (CloudWatch): a task
+  // that dies with an empty log stream is undiagnosable (M2-4-3 lesson).
+  console.error('FATAL: bootstrap failed', err);
+  process.exit(1);
+});

@@ -202,8 +202,11 @@ module "service_telemetry" {
 
   # Telemetry writes raw pg into the default `public` schema (DEV-9); it has
   # no MQTT source until IoT Core (M2-5) — the task is deployed dormant so the
-  # M2-5 wiring lands on running plumbing.
-  environment = merge(local.db_env, { DB_SCHEMA = "public" })
+  # M2-5 wiring lands on running plumbing. DB_SSL: RDS PostgreSQL 15+ forces
+  # TLS (rds.force_ssl=1) and raw node-postgres does not negotiate it on its
+  # own — Prisma (command/fleet) does, hence only telemetry needs the flag
+  # (cert verification deferred — DEV-16).
+  environment = merge(local.db_env, { DB_SCHEMA = "public", DB_SSL = "true" })
   secrets     = local.db_secrets
   secret_arns = [module.rds.master_user_secret_arn]
 }
