@@ -602,6 +602,7 @@
       },
       "required": [
         "commandId",
+        "correlationId",
         "sessionId",
         "vehicleId",
         "issuer",

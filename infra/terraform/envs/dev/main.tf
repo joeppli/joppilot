@@ -177,6 +177,9 @@ module "service_command" {
     REDIS_HOST = module.valkey.endpoint_host
     REDIS_PORT = tostring(module.valkey.endpoint_port)
     REDIS_TLS  = "true"
+    # SEC-04: control authority only for ASSIGNED vehicles — enforced in the
+    # cloud; the local sim runs with the check disabled (no admin bootstrap).
+    ASSIGNMENT_ENFORCEMENT = "true"
   })
   secrets     = local.db_secrets
   secret_arns = [module.rds.master_user_secret_arn]

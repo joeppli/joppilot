@@ -98,10 +98,12 @@ export class ManeuverService implements OnModuleInit {
       timer,
     });
 
-    // EDR
+    // EDR — the proposalId doubles as the correlation id for the whole
+    // proposal → decision → outcome chain (ICD §10, SEC-06).
     await this.prisma.eventDataRecord.create({
       data: {
         commandId: `proposal-${proposal.proposalId}`,
+        correlationId: proposal.proposalId,
         vehicleId: proposal.vehicleId,
         issuer: 'ADS',
         action: 'MANEUVER_PROPOSAL',
@@ -133,6 +135,7 @@ export class ManeuverService implements OnModuleInit {
       await this.prisma.eventDataRecord.create({
         data: {
           commandId: `proposal-${update.proposalId}`,
+          correlationId: update.proposalId,
           vehicleId: update.vehicleId,
           issuer: 'ADS',
           action: 'MANEUVER_STATUS',

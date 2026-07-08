@@ -62,7 +62,9 @@ export class ManeuverController {
     const issuedAt = await this.sessionService.getTokenIssuedAt(vehicleId);
     const envelope: CommandEnvelope = {
       commandId,
-      correlationId: uuidv4(),
+      // The proposalId doubles as the correlation id: the decision command
+      // joins the proposal → decision → outcome EDR chain (ICD §10, SEC-06).
+      correlationId: proposalId,
       sessionId: token,
       vehicleId,
       issuer: operatorId,
@@ -82,6 +84,7 @@ export class ManeuverController {
     await this.prisma.eventDataRecord.create({
       data: {
         commandId,
+        correlationId: proposalId,
         vehicleId,
         issuer: operatorId,
         action: payload.action,

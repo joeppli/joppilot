@@ -19,7 +19,7 @@ const acks = new Map();
 const client = mqtt.connect(process.env.MQTT_URL || 'mqtt://localhost:1883');
 
 const base = (over = {}) => ({
-  commandId: uuid(), sessionId: 'sess-1', vehicleId: V, issuer: 'OP-1', mode: 'MODE1',
+  commandId: uuid(), correlationId: uuid(), sessionId: 'sess-1', vehicleId: V, issuer: 'OP-1', mode: 'MODE1',
   token: { tokenId: uuid(), issuedAt: Date.now() },
   timestamp: Date.now(), ttlMs: 5000, payload: { action: 'START_MISSION' }, ...over,
 });
@@ -52,6 +52,11 @@ client.on('connect', async () => {
 
   const c = base(); delete c.ttlMs;
   pub(T.cmd, c); check('schema-invalid', await waitAck(c.commandId), 'REJECTED', 'SCHEMA_INVALID');
+
+  // SEC-06: correlationId is REQUIRED since M2-4 — the audit chain must be
+  // able to correlate every record; the vehicle refuses an envelope without it.
+  const c2 = base(); delete c2.correlationId;
+  pub(T.cmd, c2); check('missing-correlation-id', await waitAck(c2.commandId), 'REJECTED', 'SCHEMA_INVALID');
 
   const d = base({ timestamp: Date.now() - 10000, ttlMs: 2000 });
   pub(T.cmd, d); check('ttl-expired', await waitAck(d.commandId), 'REJECTED', 'TTL_EXPIRED');
