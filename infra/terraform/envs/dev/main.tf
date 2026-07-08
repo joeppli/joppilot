@@ -144,10 +144,10 @@ module "valkey" {
 # until the IoT Core backbone lands (M2-5).
 locals {
   db_env = {
-    DB_HOST   = module.rds.db_host
-    DB_PORT   = tostring(module.rds.port)
-    DB_NAME   = module.rds.database_name
-    MQTT_ENABLED = "false"
+    DB_HOST              = module.rds.db_host
+    DB_PORT              = tostring(module.rds.port)
+    DB_NAME              = module.rds.database_name
+    MQTT_ENABLED         = "false"
     AUTH_TRUST_APIGW_JWT = "true"
   }
   db_secrets = {
@@ -183,16 +183,16 @@ module "service_command" {
 }
 
 module "service_telemetry" {
-  source                = "../../modules/service"
-  name_prefix           = "joppilot-${var.environment}"
-  service_name          = "telemetry"
-  vpc_id                = module.network.vpc_id
-  subnet_ids            = module.network.private_subnet_ids
-  cluster_arn           = module.ecs_hello.cluster_arn
-  container_image       = "${module.ecr.repository_urls["joppilot/telemetry"]}:latest"
-  container_port        = 4001
-  alb_security_group_id = module.alb.security_group_id
-  alb_listener_arn      = module.alb.listener_arn
+  source                 = "../../modules/service"
+  name_prefix            = "joppilot-${var.environment}"
+  service_name           = "telemetry"
+  vpc_id                 = module.network.vpc_id
+  subnet_ids             = module.network.private_subnet_ids
+  cluster_arn            = module.ecs_hello.cluster_arn
+  container_image        = "${module.ecr.repository_urls["joppilot/telemetry"]}:latest"
+  container_port         = 4001
+  alb_security_group_id  = module.alb.security_group_id
+  alb_listener_arn       = module.alb.listener_arn
   listener_rule_priority = 20
   path_patterns          = ["/api/telemetry/*"]
   desired_count          = var.service_desired_count
@@ -206,16 +206,16 @@ module "service_telemetry" {
 }
 
 module "service_fleet" {
-  source                = "../../modules/service"
-  name_prefix           = "joppilot-${var.environment}"
-  service_name          = "fleet"
-  vpc_id                = module.network.vpc_id
-  subnet_ids            = module.network.private_subnet_ids
-  cluster_arn           = module.ecs_hello.cluster_arn
-  container_image       = "${module.ecr.repository_urls["joppilot/fleet"]}:latest"
-  container_port        = 4002
-  alb_security_group_id = module.alb.security_group_id
-  alb_listener_arn      = module.alb.listener_arn
+  source                 = "../../modules/service"
+  name_prefix            = "joppilot-${var.environment}"
+  service_name           = "fleet"
+  vpc_id                 = module.network.vpc_id
+  subnet_ids             = module.network.private_subnet_ids
+  cluster_arn            = module.ecs_hello.cluster_arn
+  container_image        = "${module.ecr.repository_urls["joppilot/fleet"]}:latest"
+  container_port         = 4002
+  alb_security_group_id  = module.alb.security_group_id
+  alb_listener_arn       = module.alb.listener_arn
   listener_rule_priority = 30
   path_patterns          = ["/api/fleet/*"]
   desired_count          = var.service_desired_count
