@@ -597,7 +597,8 @@
           ]
         },
         "signature": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         }
       },
       "required": [
@@ -610,7 +611,8 @@
         "token",
         "timestamp",
         "ttlMs",
-        "payload"
+        "payload",
+        "signature"
       ],
       "additionalProperties": false
     }

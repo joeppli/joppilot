@@ -6,6 +6,7 @@
 // Run:      node services/command/test/smoke-edge.cjs
 const mqtt = require('mqtt'); // resolves from services/command/node_modules
 const crypto = require('crypto');
+const { signDoc } = require('./sign-helper.cjs');
 
 const V = 'VEH-001';
 const T = {
@@ -13,12 +14,14 @@ const T = {
   estop: `joppilot/v1/vehicles/${V}/estop`,
   ack: `joppilot/v1/vehicles/${V}/command/ack`,
   deadman: `joppilot/v1/vehicles/${V}/deadman`,
+  zoneConfig: `joppilot/v1/vehicles/${V}/zone-config`,
 };
 const uuid = () => crypto.randomUUID();
 const acks = new Map();
 const client = mqtt.connect(process.env.MQTT_URL || 'mqtt://localhost:1883');
 
-const base = (over = {}) => ({
+// Every envelope is SIGNED since M2-5 (ICD §4) — the edge NACKs anything else.
+const base = (over = {}) => signDoc({
   commandId: uuid(), correlationId: uuid(), sessionId: 'sess-1', vehicleId: V, issuer: 'OP-1', mode: 'MODE1',
   token: { tokenId: uuid(), issuedAt: Date.now() },
   timestamp: Date.now(), ttlMs: 5000, payload: { action: 'START_MISSION' }, ...over,
@@ -97,6 +100,49 @@ client.on('connect', async () => {
 
   const i = base({ token: { tokenId: uuid(), issuedAt: Date.now() + 500 } });
   pub(T.cmd, i); check('resume-after-clear', await waitAck(i.commandId), 'ACK');
+
+  // --- M2-5: mandatory cloud signature (ICD §4) ---
+  // Unsigned envelope → the schema itself requires `signature` now.
+  const un = { ...base({ token: { tokenId: uuid(), issuedAt: Date.now() + 600 } }) };
+  delete un.signature;
+  pub(T.cmd, un); check('unsigned-rejected', await waitAck(un.commandId), 'REJECTED', 'SCHEMA_INVALID');
+
+  // Valid signature over a THEN-tampered payload → verification must fail.
+  const tp = base({ token: { tokenId: uuid(), issuedAt: Date.now() + 700 } });
+  tp.payload = { action: 'HORN', durationMs: 100 }; // mutated AFTER signing
+  pub(T.cmd, tp); check('tampered-rejected', await waitAck(tp.commandId), 'REJECTED', 'SCHEMA_INVALID');
+
+  // --- M2-5: signed zone-config delivery (ICD §1, closes DEV-8) ---
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const rev = Date.now();
+  const zoneCfg = (over = {}) => signDoc({ vehicleId: V, zone: 'depot', issuedAt: Date.now(), revision: rev, issuer: 'SMOKE-ADMIN', ...over });
+
+  // A verified depot config opens Mode 2 on the vehicle.
+  client.publish(T.zoneConfig, JSON.stringify(zoneCfg()), { qos: 1 });
+  await wait(300);
+  const creep1 = base({ mode: 'MODE2', payload: { action: 'CREEP', speedKmh: 2 }, token: { tokenId: uuid(), issuedAt: Date.now() + 800 } });
+  pub(T.cmd, creep1); check('zone-config-applied-mode2-ack', await waitAck(creep1.commandId), 'ACK');
+
+  // A REPLAYED older config (valid signature, lower revision) must be ignored.
+  client.publish(T.zoneConfig, JSON.stringify(zoneCfg({ zone: 'public_approved_route', revision: rev - 10000 })), { qos: 1 });
+  await wait(300);
+  const creep2 = base({ mode: 'MODE2', payload: { action: 'CREEP', speedKmh: 2 }, token: { tokenId: uuid(), issuedAt: Date.now() + 900 } });
+  pub(T.cmd, creep2); check('zone-config-replay-ignored', await waitAck(creep2.commandId), 'ACK');
+
+  // A tampered config (signed, then zone flipped) must be ignored.
+  const tampered = zoneCfg({ zone: 'public_approved_route', revision: rev + 1 });
+  tampered.zone = 'depot';
+  client.publish(T.zoneConfig, JSON.stringify(tampered), { qos: 1 });
+  await wait(300);
+  const creep3 = base({ mode: 'MODE2', payload: { action: 'CREEP', speedKmh: 2 }, token: { tokenId: uuid(), issuedAt: Date.now() + 1000 } });
+  pub(T.cmd, creep3); check('zone-config-tamper-ignored', await waitAck(creep3.commandId), 'ACK');
+
+  // Restore the public route (retained, so the edge re-learns it on restart);
+  // Mode 2 must be refused again.
+  client.publish(T.zoneConfig, JSON.stringify(zoneCfg({ zone: 'public_approved_route', revision: rev + 2 })), { qos: 1, retain: true });
+  await wait(300);
+  const creep4 = base({ mode: 'MODE2', payload: { action: 'CREEP', speedKmh: 2 }, token: { tokenId: uuid(), issuedAt: Date.now() + 1100 } });
+  pub(T.cmd, creep4); check('zone-config-restore-mode2-rejected', await waitAck(creep4.commandId), 'REJECTED', 'MODE_MISMATCH');
 
   clearInterval(ping);
   const passed = results.filter((r) => r.ok).length;

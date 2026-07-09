@@ -8,5 +8,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.60"
     }
+    # M2-5: generates the Ed25519 command-signing keypair (ICD §4).
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 }

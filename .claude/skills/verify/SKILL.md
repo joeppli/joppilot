@@ -23,18 +23,21 @@ pnpm build                                            # turbo: contract FIRST (s
 # Edge — NO local Rust toolchain on this machine: use docker
 docker run --rm -v "$PWD":/w -w /w/edge/sim rust:1.83-slim cargo build
 docker run -d --name joppilot_edge --network host -v "$PWD":/w -w /w/edge/sim \
-  -e EDGE_ZONE_TYPE=public_approved_route rust:1.83-slim ./target/debug/edge
+  -e EDGE_ZONE_TYPE=public_approved_route \
+  -e EDGE_CLOUD_PUBKEY=MtCOj41fShxsJ6haPWkaNOWXIqPp9PBRmbZ6caosNpM= \
+  rust:1.83-slim ./target/debug/edge
 ```
 
 ## Drive it
 
 ```bash
-node services/command/test/smoke-edge.cjs       # 11/11 — Gate 2 (schema/TTL/token/dedup/mode-spoof/latch)
+node services/command/test/smoke-edge.cjs       # 19/19 — Gate 2 (schema/signature/TTL/token/dedup/mode-spoof/latch/zone-config)
 node services/command/test/smoke-maneuver.cjs   # 11/11 — ICD §6 proposal flow
-node services/command/test/smoke-zone.cjs       # 6/6  — permit-gated zone change
+node services/command/test/smoke-zone.cjs       # 11/11 — permit-gated zone change + delivery to the vehicle (needs edge up)
 docker exec joppilot_postgres psql -U joppilot -d joppilot_db \
-  -c 'DELETE FROM "Mission"; DELETE FROM "PreDepartureCheck";'   # fleet smoke needs clean tables
-node services/fleet/test/smoke-fleet.cjs        # 20/20 — pre-departure + mission lifecycle
+  -c 'DELETE FROM fleet."Mission"; DELETE FROM fleet."PreDepartureCheck";'   # fleet smoke needs clean tables
+node services/fleet/test/smoke-fleet.cjs        # 25/25 — pre-departure + mission lifecycle + audit rows (needs command svc on 4000)
+node services/command/test/smoke-assignment.cjs # 13/13 — needs command svc restarted with ASSIGNMENT_ENFORCEMENT=true
 ```
 
 Manual probes: `POST /api/command/VEH-001/take-control` → token, then
@@ -48,6 +51,10 @@ Manual probes: `POST /api/command/VEH-001/take-control` → token, then
   `SAFE_STOP_LATCHED`. Clear with take-control + `POST .../clear-safe-stop`,
   or just restart the edge container. This is correct RES-01 behaviour, not a bug.
 - Fencing-token lock TTL is 6 s — take a fresh token right before each probe.
+- Since M2-5 every command envelope must be SIGNED: services need
+  COMMAND_SIGNING_KEY (in .env.example) and the edge needs EDGE_CLOUD_PUBKEY,
+  or the edge NACKs everything with SCHEMA_INVALID. Crafted test envelopes
+  sign via services/command/test/sign-helper.cjs.
 - Local dev DB may predate the committed migrations (P3005): baseline with
   `prisma migrate resolve --applied 20260707000000_init`, then `migrate deploy`.
 - Local `.env` files may still say `?schema=public` (pre-M2-4-2); fine locally.

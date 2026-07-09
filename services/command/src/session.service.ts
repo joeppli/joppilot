@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { RedisService } from './redis.service';
 import { MqttService } from './mqtt.service';
 import { PrismaService } from './prisma.service';
+import { SigningService } from './signing.service';
 import { v4 as uuidv4 } from 'uuid';
 import { CommandEnvelope } from '@joppilot/contract';
 
@@ -21,6 +22,7 @@ export class SessionService {
   constructor(
     private readonly redis: RedisService,
     private readonly mqttService: MqttService,
+    private readonly signing: SigningService,
     private readonly prisma: PrismaService
   ) {}
 
@@ -115,7 +117,9 @@ export class SessionService {
   async triggerSafeStop(vehicleId: string) {
     const commandId = uuidv4();
     const correlationId = uuidv4();
-    const envelope: CommandEnvelope = {
+    // Signed like every command (ICD §4, M2-5) — the vehicle would NACK an
+    // unsigned system envelope just like an operator one.
+    const envelope: CommandEnvelope = this.signing.signDocument({
       commandId,
       correlationId,
       sessionId: 'DEADMAN-SYSTEM',
@@ -129,7 +133,7 @@ export class SessionService {
       timestamp: Date.now(),
       ttlMs: 5000,
       payload: { action: 'SAFE_STOP', reason: 'DEADMAN_TIMEOUT' }
-    };
+    });
 
     // EDR: Save command log before publishing
     await this.prisma.eventDataRecord.create({

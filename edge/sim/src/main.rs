@@ -9,6 +9,8 @@ use std::fs;
 use jsonschema::JSONSchema;
 use serde_json::Value;
 use uuid::Uuid;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use base64::Engine as _;
 
 // ------------------------------------------------------------------
 // Wire types (mirror @joppilot/contract)
@@ -193,7 +195,23 @@ struct CommandEnvelope {
 // inside it the vehicle is in its CONFIGURED zone type, outside it the
 // vehicle is `out_of_tod` (outside approved zone) → all movement is
 // refused and a safe-stop is latched.
+//
+// M2-5 (closes DEV-8): the configured zone is no longer a static env
+// var — the cloud DELIVERS signed, revision-monotonic ZoneConfig
+// documents (retained topic locally, `zone-config` Device Shadow on
+// AWS). EDGE_ZONE_TYPE only seeds the initial state (revision 0).
+// Fail-safe: an unverifiable / stale / foreign document is IGNORED and
+// the vehicle stays on its current (stricter) zone; a permit's
+// validUntil is enforced HERE, cloud-independently — past the window
+// the effective zone reverts to the public_approved_route safe default.
 // ------------------------------------------------------------------
+#[derive(Debug, Clone)]
+struct ZoneState {
+    zone: String,
+    permit_valid_until: Option<u64>,
+    revision: u64,
+}
+
 fn is_in_approved_territory(lat: f64, lng: f64) -> bool {
     let min_lat = 47.3700;
     let max_lat = 47.3800;
@@ -202,12 +220,41 @@ fn is_in_approved_territory(lat: f64, lng: f64) -> bool {
     lat >= min_lat && lat <= max_lat && lng >= min_lng && lng <= max_lng
 }
 
-fn effective_zone(lat: f64, lng: f64, configured_zone: &str) -> String {
+/// The configured zone type with the permit window enforced on-vehicle:
+/// an expired permit can never keep a permissive zone alive (ICD §1).
+fn current_zone_type(zs: &ZoneState) -> String {
+    if let Some(valid_until) = zs.permit_valid_until {
+        if now_ms() > valid_until {
+            return "public_approved_route".to_string();
+        }
+    }
+    zs.zone.clone()
+}
+
+fn effective_zone(lat: f64, lng: f64, zs: &ZoneState) -> String {
     if is_in_approved_territory(lat, lng) {
-        configured_zone.to_string()
+        current_zone_type(zs)
     } else {
         "out_of_tod".to_string()
     }
+}
+
+/// Ed25519 verification of the cloud signature (ICD §4, M2-5). The signed
+/// bytes are the CANONICAL JSON of the document without its `signature`
+/// field; serde_json's default BTreeMap object model re-serializes with
+/// sorted keys, matching the cloud's canonicalStringify.
+fn verify_signature(raw: &Value, key: &VerifyingKey) -> bool {
+    let Some(obj) = raw.as_object() else { return false; };
+    let Some(sig_b64) = obj.get("signature").and_then(|v| v.as_str()) else { return false; };
+    let Ok(sig_bytes) = base64::engine::general_purpose::STANDARD.decode(sig_b64) else { return false; };
+    let Ok(sig) = Signature::from_slice(&sig_bytes) else { return false; };
+    let mut unsigned = obj.clone();
+    unsigned.remove("signature");
+    let canonical = match serde_json::to_string(&Value::Object(unsigned)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    key.verify(canonical.as_bytes(), &sig).is_ok()
 }
 
 /// Mirror of contract `isModeAllowedInZone` / ZONE_MODE_MATRIX (ICD §1).
@@ -300,9 +347,34 @@ fn ack_json(command_id: &str, status: &str, reason: Option<&str>) -> String {
 async fn main() {
     println!("Joppilot Edge Safety Kernel starting...");
 
-    // Configured zone for this vehicle (distributed as zone configuration; ICD §1).
-    let configured_zone = env::var("EDGE_ZONE_TYPE").unwrap_or_else(|_| "public_approved_route".to_string());
-    println!("Configured zone type: {}", configured_zone);
+    // Initial zone for this vehicle. Since M2-5 this only SEEDS the state —
+    // the cloud delivers signed zone-config documents at runtime (ICD §1).
+    let initial_zone = env::var("EDGE_ZONE_TYPE").unwrap_or_else(|_| "public_approved_route".to_string());
+    println!("Initial zone type: {} (awaiting signed zone-config from cloud)", initial_zone);
+
+    // --- Pinned cloud public key (ICD §4, M2-5) ---
+    // FAIL-CLOSED: since M2-5 every command must carry a valid cloud
+    // signature; a kernel that cannot verify signatures must not run.
+    // EDGE_CLOUD_PUBKEY = base64 of the raw 32-byte Ed25519 public key.
+    let cloud_pubkey: VerifyingKey = {
+        let b64 = env::var("EDGE_CLOUD_PUBKEY").unwrap_or_else(|_| {
+            eprintln!("⛔ EDGE_CLOUD_PUBKEY is required since M2-5 (ICD §4: commands are signed). Refusing to start (fail-closed).");
+            std::process::exit(1);
+        });
+        let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).unwrap_or_else(|e| {
+            eprintln!("⛔ EDGE_CLOUD_PUBKEY is not valid base64: {}. Refusing to start (fail-closed).", e);
+            std::process::exit(1);
+        });
+        let arr: [u8; 32] = bytes.as_slice().try_into().unwrap_or_else(|_| {
+            eprintln!("⛔ EDGE_CLOUD_PUBKEY must be exactly 32 bytes (raw Ed25519). Refusing to start (fail-closed).");
+            std::process::exit(1);
+        });
+        VerifyingKey::from_bytes(&arr).unwrap_or_else(|e| {
+            eprintln!("⛔ EDGE_CLOUD_PUBKEY is not a valid Ed25519 key: {}. Refusing to start (fail-closed).", e);
+            std::process::exit(1);
+        })
+    };
+    println!("Pinned cloud public key loaded (Ed25519, ICD §4)");
 
     // --- Load the command JSON Schema from the contract (CONTRACT.md) ---
     // The safety kernel validates every command against the contract schema.
@@ -325,6 +397,28 @@ async fn main() {
             Ok(c) => { println!("Loaded command schema from {}", schema_path); c }
             Err(e) => {
                 eprintln!("⛔ Failed to compile schema: {}. Refusing to start (fail-closed).", e);
+                std::process::exit(1);
+            }
+        }
+    };
+
+    // ZoneConfig schema (M2-5): the zone document decides whether Mode 2 is
+    // possible, so it gets the same fail-closed treatment as commands.
+    let zoneconfig_schema: JSONSchema = {
+        let path = env::var("EDGE_ZONECONFIG_SCHEMA_PATH")
+            .unwrap_or_else(|_| "../../packages/contract/schemas/ZoneConfig.json".to_string());
+        let raw = fs::read_to_string(&path).unwrap_or_else(|e| {
+            eprintln!("⛔ Could not read zone-config schema at {}: {}. Refusing to start (fail-closed).", path, e);
+            std::process::exit(1);
+        });
+        let v: Value = serde_json::from_str(&raw).unwrap_or_else(|e| {
+            eprintln!("⛔ Failed to parse zone-config schema JSON: {}. Refusing to start (fail-closed).", e);
+            std::process::exit(1);
+        });
+        match JSONSchema::compile(&v) {
+            Ok(c) => { println!("Loaded zone-config schema from {}", path); c }
+            Err(e) => {
+                eprintln!("⛔ Failed to compile zone-config schema: {}. Refusing to start (fail-closed).", e);
                 std::process::exit(1);
             }
         }
@@ -364,14 +458,33 @@ async fn main() {
     let deadman_topic = format!("joppilot/v1/vehicles/{}/deadman", vehicle_id);         // cloud → vehicle ping
     let proposal_topic = format!("joppilot/v1/vehicles/{}/maneuver/proposal", vehicle_id); // edge → cloud
     let maneuver_status_topic = format!("joppilot/v1/vehicles/{}/maneuver/status", vehicle_id); // edge → cloud
+    // Zone-config delivery (M2-5, DEV-8): retained topic locally; on AWS IoT
+    // the `zone-config` named Device Shadow delta/get topics carry the same
+    // signed document inside the shadow envelope.
+    let zone_config_topic = format!("joppilot/v1/vehicles/{}/zone-config", vehicle_id);
+    let shadow_prefix = format!("$aws/things/{}/shadow/name/zone-config", vehicle_id);
 
     client.subscribe(&estop_topic, QoS::AtLeastOnce).await.unwrap();
     client.subscribe(&command_topic, QoS::AtLeastOnce).await.unwrap();
     client.subscribe(&deadman_topic, QoS::AtLeastOnce).await.unwrap();
-    println!("Subscribed to E-STOP, COMMAND and DEADMAN topics");
+    client.subscribe(&zone_config_topic, QoS::AtLeastOnce).await.unwrap();
+    if is_aws {
+        client.subscribe(format!("{}/update/delta", shadow_prefix), QoS::AtLeastOnce).await.unwrap();
+        client.subscribe(format!("{}/get/accepted", shadow_prefix), QoS::AtLeastOnce).await.unwrap();
+        // Ask for the current shadow so a config set while offline still lands.
+        client.publish(format!("{}/get", shadow_prefix), QoS::AtLeastOnce, false, "{}").await.unwrap();
+    }
+    println!("Subscribed to E-STOP, COMMAND, DEADMAN and ZONE-CONFIG topics");
 
     // -------------------- Shared state --------------------
     let location_state = Arc::new(Mutex::new((47.3769, 8.5417)));
+    // Zone state (M2-5): seeded from EDGE_ZONE_TYPE, updated only by signed,
+    // revision-monotonic cloud zone-config documents.
+    let zone_state = Arc::new(Mutex::new(ZoneState {
+        zone: initial_zone,
+        permit_valid_until: None,
+        revision: 0,
+    }));
     // Safe-stop latch (RES-04). Once engaged it stays engaged across reconnects;
     // only an authorized CLEAR_SAFE_STOP releases it.
     let latched = Arc::new(Mutex::new(false));
@@ -419,7 +532,7 @@ async fn main() {
         let telemetry_topic_clone = telemetry_topic.clone();
         let location_for_telemetry = location_state.clone();
         let latch_for_telemetry = latched.clone();
-        let zone_for_telemetry = configured_zone.clone();
+        let zone_for_telemetry = zone_state.clone();
         let speed_for_telemetry = speed_state.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(100));
@@ -450,7 +563,7 @@ async fn main() {
                     (loc.0, loc.1)
                 };
 
-                let zone = effective_zone(lat, lng, &zone_for_telemetry);
+                let zone = effective_zone(lat, lng, &zone_for_telemetry.lock().unwrap().clone());
 
                 // RES-03: a zone/geofence violation is ITSELF a safe-mode
                 // trigger — latch autonomously the moment the vehicle leaves
@@ -495,7 +608,7 @@ async fn main() {
         let hb_topic = heartbeat_up_topic.clone();
         let location_for_hb = location_state.clone();
         let latch_for_hb = latched.clone();
-        let zone_for_hb = configured_zone.clone();
+        let zone_for_hb = zone_state.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(1));
             let mut seq: u64 = 0;
@@ -510,7 +623,7 @@ async fn main() {
                     seq,
                     healthy: !is_latched,
                     vehicle_state: if is_latched { "SAFE_STOPPED".to_string() } else { "IDLE".to_string() },
-                    current_zone: effective_zone(lat, lng, &zone_for_hb),
+                    current_zone: effective_zone(lat, lng, &zone_for_hb.lock().unwrap().clone()),
                     latched: is_latched,
                 };
                 let json = serde_json::to_string(&hb).unwrap();
@@ -652,6 +765,50 @@ async fn main() {
                 continue;
             }
 
+            // Zone-config delivery (M2-5, ICD §1 — closes DEV-8). FAIL-SAFE:
+            // anything unverifiable, foreign or stale is IGNORED — the
+            // vehicle keeps its current (stricter) zone; there is no NACK
+            // path for config, the cloud observes the outcome via telemetry
+            // currentZone.
+            if p.topic == zone_config_topic || p.topic.starts_with(&shadow_prefix) {
+                let raw: Value = match serde_json::from_slice(&p.payload) {
+                    Ok(v) => v,
+                    Err(_) => { eprintln!("⛔ Dropped non-JSON zone-config on {}", p.topic); continue; }
+                };
+                // Unwrap the Device Shadow envelope when present:
+                //   update/delta  → {"state":{"config":{...}}}
+                //   get/accepted  → {"state":{"desired":{"config":{...}}}}
+                let doc = raw.pointer("/state/desired/config")
+                    .or_else(|| raw.pointer("/state/config"))
+                    .unwrap_or(&raw)
+                    .clone();
+                if zoneconfig_schema.validate(&doc).is_err() {
+                    println!("⛔ ZONE-CONFIG IGNORED: schema invalid (fail-safe, keeping current zone).");
+                    continue;
+                }
+                if !verify_signature(&doc, &cloud_pubkey) {
+                    println!("⛔ ZONE-CONFIG IGNORED: signature missing/invalid (fail-safe, keeping current zone).");
+                    continue;
+                }
+                if doc.get("vehicleId").and_then(|v| v.as_str()) != Some(vehicle_id) {
+                    println!("⛔ ZONE-CONFIG IGNORED: addressed to another vehicle (fail-safe).");
+                    continue;
+                }
+                let revision = doc.get("revision").and_then(|v| v.as_u64()).unwrap_or(0);
+                let zone = doc.get("zone").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let permit_valid_until = doc.pointer("/permit/validUntil").and_then(|v| v.as_u64());
+                let mut zs = zone_state.lock().unwrap();
+                if revision <= zs.revision {
+                    println!("⛔ ZONE-CONFIG IGNORED: revision {} <= current {} (anti-replay, fail-safe).", revision, zs.revision);
+                    continue;
+                }
+                *zs = ZoneState { zone: zone.clone(), permit_valid_until, revision };
+                drop(zs);
+                println!("🗺️  ZONE-CONFIG APPLIED: zone='{}' permit_valid_until={:?} revision={} (signed, ICD §1).",
+                    zone, permit_valid_until, revision);
+                continue;
+            }
+
             // 1) Schema validation (SCHEMA_INVALID, ICD §4) -----------------
             let raw: Value = match serde_json::from_slice(&p.payload) {
                 Ok(v) => v,
@@ -660,6 +817,17 @@ async fn main() {
             if command_schema.validate(&raw).is_err() {
                 let cid = raw.get("commandId").and_then(|v| v.as_str()).unwrap_or("unknown");
                 println!("⛔ COMMAND REJECTED! Schema invalid. ID: {}", cid);
+                let ack = ack_json(cid, "REJECTED", Some("SCHEMA_INVALID"));
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                continue;
+            }
+
+            // 1b) Cloud signature (SCHEMA_INVALID, ICD §4 — mandatory since
+            // M2-5). Before anything else acts on the envelope: an unsigned
+            // or altered command is not a command.
+            if !verify_signature(&raw, &cloud_pubkey) {
+                let cid = raw.get("commandId").and_then(|v| v.as_str()).unwrap_or("unknown");
+                println!("⛔ COMMAND REJECTED! Cloud signature missing/invalid. ID: {}", cid);
                 let ack = ack_json(cid, "REJECTED", Some("SCHEMA_INVALID"));
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                 continue;
@@ -785,7 +953,7 @@ async fn main() {
 
             // 6) Zone / mode matrix (GEOFENCE_VIOLATION / MODE_MISMATCH, ICD §1) ---
             let (lat, lng) = *location_state.lock().unwrap();
-            let zone = effective_zone(lat, lng, &configured_zone);
+            let zone = effective_zone(lat, lng, &zone_state.lock().unwrap().clone());
 
             if zone == "out_of_tod" && matches!(envelope.mode, OperationMode::MODE1 | OperationMode::MODE2) {
                 // Outside the approved zone → refuse and latch a safe-stop (ICD §1/§9).

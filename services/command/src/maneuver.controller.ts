@@ -1,5 +1,6 @@
 import { Controller, Post, Param, Body, Req, Logger, NotFoundException, UnauthorizedException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { ManeuverService } from './maneuver.service';
+import { SigningService } from './signing.service';
 import { requireOperatorIdentity } from './identity';
 import { SessionService } from './session.service';
 import { MqttService } from './mqtt.service';
@@ -20,6 +21,7 @@ export class ManeuverController {
     private readonly maneuverService: ManeuverService,
     private readonly sessionService: SessionService,
     private readonly mqttService: MqttService,
+    private readonly signing: SigningService,
     private readonly prisma: PrismaService,
   ) {}
 
@@ -65,7 +67,8 @@ export class ManeuverController {
     const mode = inferMode(payload.action);
     const commandId = uuidv4();
     const issuedAt = await this.sessionService.getTokenIssuedAt(vehicleId);
-    const envelope: CommandEnvelope = {
+    // ICD §4 (M2-5): decisions are regular Mode 1 commands — signed like all.
+    const envelope: CommandEnvelope = this.signing.signDocument({
       commandId,
       // The proposalId doubles as the correlation id: the decision command
       // joins the proposal → decision → outcome EDR chain (ICD §10, SEC-06).
@@ -78,7 +81,7 @@ export class ManeuverController {
       timestamp: Date.now(),
       ttlMs: 5000,
       payload,
-    };
+    });
 
     const check = CommandEnvelopeSchema.safeParse(envelope);
     if (!check.success) {

@@ -10,10 +10,11 @@ import { RedisService } from './redis.service';
 import { SessionService } from './session.service';
 import { ZoneService } from './zone.service';
 import { AssignmentService } from './assignment.service';
+import { SigningService } from './signing.service';
 
 @Module({
   imports: [],
   controllers: [CommandController, ManeuverController, HealthController],
-  providers: [MqttService, PrismaService, RedisService, SessionService, ZoneService, AssignmentService, ManeuverService, ManeuverGateway],
+  providers: [MqttService, PrismaService, RedisService, SessionService, ZoneService, AssignmentService, SigningService, ManeuverService, ManeuverGateway],
 })
 export class AppModule {}

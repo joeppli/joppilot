@@ -88,9 +88,70 @@ function httpPost(path, body, role = 'admin') {
     revert.status === 201 && revert.body?.status === 'success',
     JSON.stringify(revert));
 
+  // ---- M2-5: DELIVERY to the vehicle (ICD §1 — closes DEV-8) ----
+  // The cloud zone change must actually REACH the edge: set VEH-001 (the
+  // vehicle the sim edge runs as) to depot via the API, then prove Mode 2 is
+  // accepted ON THE VEHICLE; revert and prove it is refused again.
+  // Needs the edge + mosquitto running (same prereqs as smoke-edge).
+  const EV = 'VEH-001';
+  const mqtt = require('mqtt');
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const acks = new Map();
+  const mq = mqtt.connect(process.env.MQTT_URL || 'mqtt://localhost:1883');
+  await new Promise((res) => mq.on('connect', res));
+  mq.subscribe(`joppilot/v1/vehicles/${EV}/command/ack`);
+  mq.on('message', (t, m) => { try { const a = JSON.parse(m.toString()); acks.set(a.commandId, a); } catch {} });
+  const waitAck = (id, ms = 2000) => new Promise((res) => {
+    const t = setInterval(() => { if (acks.has(id)) { clearInterval(t); res(acks.get(id)); } }, 30);
+    setTimeout(() => { clearInterval(t); res(acks.get(id)); }, ms);
+  });
+
+  // Session bootstrap (assignment enforcement may be on).
+  const OP = `OP-ZONE-SMOKE-${Date.now()}`;
+  let tc = await httpPost(`/api/command/${EV}/take-control`, { operatorId: OP }, 'operator');
+  if (tc.status === 403) {
+    await httpPost(`/api/command/${EV}/assign`, { operatorId: OP, assignedBy: 'ADMIN-SMOKE' });
+    tc = await httpPost(`/api/command/${EV}/take-control`, { operatorId: OP }, 'operator');
+  }
+  const token = tc.body?.token;
+  const hb = setInterval(() => httpPost(`/api/command/${EV}/heartbeat`, { operatorId: OP, token }, 'operator').catch(() => {}), 2000);
+  await httpPost(`/api/command/${EV}/heartbeat`, { operatorId: OP, token }, 'operator');
+
+  // The edge latches a safe-stop whenever the previous test's deadman pings
+  // stop (correct RES-01 behaviour) — release it with the authorized action
+  // before driving (ICD §9).
+  const clear = await httpPost(`/api/command/${EV}/clear-safe-stop`, { operatorId: OP, token }, 'operator');
+  if (clear.body?.commandId) await waitAck(clear.body.commandId);
+
+  // 7a. Since M2-5 EVERY Mode-2-capable zone needs an authorization artifact
+  // + validity window — a free-form depot label must be refused (DEV-14).
+  const bareDepot = await httpPost(`/api/command/${EV}/zone`, { zone: 'depot' });
+  assert('free-form depot rejected (PERMIT_REQUIRED)',
+    bareDepot.status === 403 && bareDepot.body?.reason === 'PERMIT_REQUIRED', JSON.stringify(bareDepot.body));
+
+  // 7b. Depot with a site authorization → delivered to the edge → Mode 2
+  // ACCEPTED on the vehicle.
+  const toDepot = await httpPost(`/api/command/${EV}/zone`, { zone: 'depot', permitId: 'SITE-DEPOT-GL-01', validUntil: Date.now() + 3600_000 });
+  assert('depot change delivered to vehicle', toDepot.status === 201 && toDepot.body?.delivered === true, JSON.stringify(toDepot.body));
+  await wait(400);
+  const creep = await httpPost(`/api/command/${EV}/command`, { operatorId: OP, token, payload: { action: 'CREEP', speedKmh: 2 } }, 'operator');
+  const creepAck = creep.body?.commandId ? await waitAck(creep.body.commandId) : undefined;
+  assert('mode2 ACCEPTED on vehicle after depot config (DEV-8)', creepAck?.status === 'ACK', JSON.stringify({ creep: creep.body, ack: creepAck }));
+
+  // 8. Revert via API → Mode 2 REFUSED on the vehicle again.
+  const back = await httpPost(`/api/command/${EV}/zone`, { zone: 'public_approved_route' });
+  assert('revert delivered to vehicle', back.status === 201 && back.body?.delivered === true, JSON.stringify(back.body));
+  await wait(400);
+  // Gate 1 already refuses MODE2 in this zone (cloud + edge agree post-delivery).
+  const creep2 = await httpPost(`/api/command/${EV}/command`, { operatorId: OP, token, payload: { action: 'CREEP', speedKmh: 2 } }, 'operator');
+  assert('mode2 refused after revert', creep2.status === 403 && creep2.body?.reason === 'MODE_MISMATCH', JSON.stringify(creep2.body));
+
+  clearInterval(hb);
+  mq.end();
+
   console.log(`\n=== ${passed}/${passed + failed} passed ===`);
   process.exit(failed === 0 ? 0 : 1);
 })().catch((e) => {
-  console.error('Smoke test failed to run (is the command service up on :4000?)', e.message);
+  console.error('Smoke test failed to run (are the command service on :4000, mosquitto and the edge up?)', e.message);
   process.exit(1);
 });

@@ -12,3 +12,10 @@ rumqttc = "0.22.0"
 # kernel validates commands against the contract schema (CONTRACT.md).
 jsonschema = { version = "0.17", default-features = false }
 uuid = { version = "1.0", features = ["v4"] }
+# M2-5 (ICD §4): Ed25519 verification of the cloud signature on every command
+# and zone-config document. The vehicle holds only the PUBLIC key (SEC-08).
+# serde_json's default (BTreeMap-backed) object model gives canonical sorted
+# key order on re-serialization — do NOT enable its `preserve_order` feature,
+# signature verification depends on it.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+base64 = "0.22"

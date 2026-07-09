@@ -23,7 +23,7 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 
 ### Implemented so far (all per ICD / architecture, smoke-tested)
 
-- **Two-gate command path** — cloud Gate 1 (Zod + zone/mode filter + fencing token; the mode is **derived from the action server-side**, never client-supplied) → MQTT → edge Gate 2 (JSON-Schema validation, TTL, monotonic token, idempotency/dedup with a bounded store, **mode↔action consistency**, zone-mode matrix). The schema load is fail-closed: an edge that cannot validate commands refuses to start.
+- **Two-gate command path** — cloud Gate 1 (Zod + zone/mode filter + fencing token; the mode is **derived from the action server-side**, never client-supplied) → MQTT → edge Gate 2 (JSON-Schema validation, **Ed25519 cloud-signature verification (mandatory since M2-5, ICD §4)**, TTL, monotonic token, idempotency/dedup with a bounded store, **mode↔action consistency**, zone-mode matrix). The schema/pubkey load is fail-closed: an edge that cannot validate or verify commands refuses to start; the vehicle holds only the **public** key (SEC-08).
 - **Latched safe-stop & local watchdog** (RES-01/03/04) — 3 s cloud silence → autonomous safe-stop latch; **leaving the approved territory latches autonomously too** (geofence trigger, RES-03), commands merely observe it. Only `CLEAR_SAFE_STOP` releases the latch. Every latch transition seen in the heartbeat is appended to the EDR (cloud-side interim record until the on-vehicle log + sync lands in M3-6).
 - **Maneuver proposal flow** (ICD §6) — edge generates a proposal → cloud `Maneuver` service + decision window → console card → operator decision returns as a regular Mode 1 command; timeout → safe default (edge authoritative).
 - **Pre-departure check** (ICD §7 / LEG-03) — OAD checklist (self-diagnosis auto-pass — a **DEV-13** placeholder until M4-4 wires live vehicle health — + operator verification; operators cannot overwrite self-diagnosis items), safety-critical fail blocks confirmation, and mission start is **fail-closed**: no confirmed checklist (including a missing one) → no start. Since **audit-7** the whole fleet workflow is an operator action: every mutating call requires the vehicle's active **fencing token** (fleet reads the lock from Valkey, fail-closed), and every checklist creation / item verification / confirmation (incl. **rejected attempts**) and mission transition is an **append-only audit row** (`FleetEventRecord`, ICD §7 step 4 / LEG-04 — DEV-17 tracks the table split, DEV-18 the not-yet-vehicle-bound command envelopes).
@@ -33,10 +33,10 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 - **Operator↔vehicle assignment + revocation** (SEC-04/09, M2-4-4) — admin-granted assignments gate take-control (cloud-enforced; `ASSIGNMENT_ENFORCEMENT=true`); revoking severs an active session immediately (lock deleted → commands/heartbeats fail → vehicle watchdog latches). Every grant/revocation is EDR-logged.
 - **Identity binding** (LEG-05, audit-7) — in the cloud (`AUTH_TRUST_APIGW_JWT=true`) the body-supplied `operatorId` must equal the API-GW-verified JWT identity (`cognito:username`/`sub`), and admin actions are attributed to the authenticated admin — an authenticated operator can no longer act (and be audit-attributed) as someone else. Local dev skips the binding (no identity provider).
 - **Command-channel honesty** (ICD §3, audit-7) — a publish that cannot reach the broker returns **503 PUBLISH_FAILED** (plus an EDR row) instead of a fake success — critical for E-STOP, which must not silently drop; and a command with no vehicle ACK within TTL+grace gets a **NO_ACK** EDR row (visibility only; the retry policy comes with the M2-5 IoT Core backbone). The edge additionally rejects envelopes addressed to a **different vehicle** (`UNAUTHORIZED`) and refuses maneuver decisions arriving **after the decision window** (safe default wins, ICD §6).
-- **Permit-gated zone change** (ICD §1) — **cloud side only (Gate 1)** so far: opening Mode 2 on a public route (→ `public_test_permit`) is controlled + logged, not an instant override — it requires a cantonal permit (`permitId` + validity window) and reverts to the safe default when the permit lapses. **Not yet end-to-end:** today the cloud zone-change does **not** reach the vehicle — the edge runs from its own `EDGE_ZONE_TYPE` env, so a cloud override is ignored on the vehicle. Delivery to the edge (Device Shadow) lands in **M2-5**, and edge permit consumption (`validFrom`, speed limit) in **M3-5**. The contradiction is fail-safe (the edge stays on its stricter local zone), but the feature is not yet wired through.
+- **Permit-gated zone change, delivered to the vehicle** (ICD §1, M2-5 — **DEV-8 closed**) — since M2-5 **every Mode-2-capable zone type** (`public_test_permit`, `depot`, `private`, `permitted_test`) requires an authorization artifact (`permitId` + `validUntil`); the change is published to the vehicle as a **signed, revision-monotonic ZoneConfig document** (retained MQTT topic locally, the `zone-config` named Device Shadow on AWS IoT). The edge verifies the signature against its pinned key, ignores stale/foreign/unverifiable documents (fail-safe: stays on its stricter current zone) and enforces `validUntil` **on the vehicle** — past the window it reverts to `public_approved_route` on its own. `EDGE_ZONE_TYPE` only seeds the initial state. Edge enforcement of `validFrom` + speed limit follows in **M3-5**; the geometry-validated canton zone catalog stays open (DEV-14).
 - **Live map** (AD-15) — swisstopo tiles via MapLibre, vehicle position + approved-zone overlay.
 
-> **Not yet** (each now has a slot in the timeline): RBAC identity is wired in the cloud since **M2-4-3** — the deployed services read the role from the API-GW-verified `cognito:groups` claim (`AUTH_TRUST_APIGW_JWT=true`; the `x-operator-role` header remains a **local-dev-only** convenience). The rest of the M2-4 scope landed with **M2-4-4**: operator↔vehicle **assignment model** + assignment check on take-control (SEC-04, cloud-enforced via `ASSIGNMENT_ENFORCEMENT=true`), revocation→immediate session severing (SEC-09: lock deleted → commands/heartbeats fail → vehicle watchdog latches), and **mandatory `correlationId`** (SEC-06: Gate 1 generates, EDR column carries, edge NACKs without it; the maneuver chain correlates by `proposalId`). Command signing enforced (**M2-5**), log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). Track: `.claude/joppilot_project_timeline.md`.
+> **Not yet** (each now has a slot in the timeline): RBAC identity is wired in the cloud since **M2-4-3** — the deployed services read the role from the API-GW-verified `cognito:groups` claim (`AUTH_TRUST_APIGW_JWT=true`; the `x-operator-role` header remains a **local-dev-only** convenience). The rest of the M2-4 scope landed with **M2-4-4**: operator↔vehicle **assignment model** + assignment check on take-control (SEC-04, cloud-enforced via `ASSIGNMENT_ENFORCEMENT=true`), revocation→immediate session severing (SEC-09: lock deleted → commands/heartbeats fail → vehicle watchdog latches), and **mandatory `correlationId`** (SEC-06: Gate 1 generates, EDR column carries, edge NACKs without it; the maneuver chain correlates by `proposalId`). **Command signing + zone-config delivery landed with M2-5 (local path)**; the remaining M2-5 piece is the **IoT Core infrastructure** (X.509/mTLS provisioning, real Device Shadow) — gated on the DEV-12 free-plan probe. Then: log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). Track: `.claude/joppilot_project_timeline.md`.
 
 ---
 
@@ -98,7 +98,10 @@ cd services/telemetry && pnpm build && node dist/main      # or: pnpm dev
 cd services/fleet     && pnpm build && node dist/main      # or: pnpm dev
 
 # Terminal 4 — Edge simulator (Gate 2, authoritative safety kernel)
-cd edge/sim && EDGE_ZONE_TYPE=public_approved_route cargo run
+# EDGE_CLOUD_PUBKEY = the DEV public key matching COMMAND_SIGNING_KEY in
+# services/command/.env.example (M2-5: the vehicle verifies every command).
+cd edge/sim && EDGE_ZONE_TYPE=public_approved_route \
+  EDGE_CLOUD_PUBKEY=MtCOj41fShxsJ6haPWkaNOWXIqPp9PBRmbZ6caosNpM= cargo run
 
 # Terminal 5 — Operator console              → http://localhost:3000
 cd apps/console && pnpm dev
@@ -117,7 +120,7 @@ Then open **http://localhost:3000**.
 With infra + all services + the edge running:
 
 ```bash
-# Edge Gate-2 smoke test — expect 13/13 pass
+# Edge Gate-2 smoke test — expect 19/19 pass (incl. signature + zone-config)
 node services/command/test/smoke-edge.cjs
 
 # Assignment + revocation + handover gate (SEC-04/09) — expect 13/13 pass.
@@ -128,7 +131,8 @@ node services/command/test/smoke-assignment.cjs
 # Maneuver proposal end-to-end (ICD §6) — expect 11/11 pass
 node services/command/test/smoke-maneuver.cjs
 
-# Zone change / test-permit gate (ICD §1) — expect 6/6 pass
+# Zone change / permit gate + delivery to the vehicle (ICD §1, DEV-8) —
+# expect 11/11 pass. Needs mosquitto + the edge running (like smoke-edge).
 node services/command/test/smoke-zone.cjs
 
 # Fleet & mission + pre-departure check + audit rows — expect 25/25 pass.
@@ -189,7 +193,8 @@ infra/terraform/
 | M2-4-2 | RDS PostgreSQL db.t4g.micro in-VPC (KMS CMK, deletion-protected; **interim for AD-14** — the free account plan only allows Aurora as a public VPC-less "express" cluster, swaps back to Aurora Serverless v2 on plan upgrade) + RDS-managed secret + `secretsmanager` VPC endpoint + Prisma migrations per schema, applied by the container entrypoint | ✅ |
 | M2-4-3 | Real services (command/telemetry/fleet) on ECS Fargate: path-routed behind the internal ALB (`/api/command|maneuver` → 4000, `/api/fleet` → 4002, `/api/telemetry` → 4001), DB creds injected from the RDS-managed secret, **Serverless Valkey** (fencing lock, TLS-only) + RBAC from the API-GW-verified `cognito:groups` claim (closes DEV-7; trust note = DEV-15) + DB/Valkey SG ingress restricted to task SGs (closes DEV-6). **MQTT stays disabled until M2-5** (no broker in the cloud yet) — command/fleet REST is live, telemetry is deployed dormant | ✅ |
 | M2-4-4 | Rest of the M2-4 scope: operator↔vehicle **assignment model** + take-control gate (SEC-04, `ASSIGNMENT_ENFORCEMENT=true` on the command task), revocation → immediate session severing (SEC-09), **mandatory `correlationId`** end-to-end (SEC-06: envelope schema + EDR column + edge NACK; maneuver chain correlates by `proposalId`) | ✅ |
-| M2-5 | IoT Core (MQTT backbone, mTLS, Device Shadow) | ⏳ |
+| M2-5a | Command signing (Ed25519, ICD §4) enforced on the vehicle + **zone/permit config delivery to the edge** (signed, revision-monotonic; DEV-8 closed) — local MQTT path | ✅ |
+| M2-5b | IoT Core (MQTT backbone, mTLS/X.509 provisioning, `zone-config` Device Shadow) — **gated on the DEV-12 free-plan probe** | ⏳ |
 | later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
 
 ### Ingress path (current)

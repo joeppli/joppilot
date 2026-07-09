@@ -1,0 +1,77 @@
+{
+  "$ref": "#/definitions/ZoneConfig",
+  "definitions": {
+    "ZoneConfig": {
+      "type": "object",
+      "properties": {
+        "vehicleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "zone": {
+          "type": "string",
+          "enum": [
+            "public_approved_route",
+            "public_test_permit",
+            "depot",
+            "private",
+            "permitted_test",
+            "out_of_tod"
+          ]
+        },
+        "permit": {
+          "type": "object",
+          "properties": {
+            "permitId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "validUntil": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "validFrom": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "speedLimitKmh": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          },
+          "required": [
+            "permitId",
+            "validUntil"
+          ],
+          "additionalProperties": false
+        },
+        "issuedAt": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "revision": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "issuer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signature": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "vehicleId",
+        "zone",
+        "issuedAt",
+        "revision",
+        "issuer",
+        "signature"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
