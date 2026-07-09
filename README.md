@@ -26,11 +26,13 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 - **Two-gate command path** — cloud Gate 1 (Zod + zone/mode filter + fencing token; the mode is **derived from the action server-side**, never client-supplied) → MQTT → edge Gate 2 (JSON-Schema validation, TTL, monotonic token, idempotency/dedup with a bounded store, **mode↔action consistency**, zone-mode matrix). The schema load is fail-closed: an edge that cannot validate commands refuses to start.
 - **Latched safe-stop & local watchdog** (RES-01/03/04) — 3 s cloud silence → autonomous safe-stop latch; **leaving the approved territory latches autonomously too** (geofence trigger, RES-03), commands merely observe it. Only `CLEAR_SAFE_STOP` releases the latch. Every latch transition seen in the heartbeat is appended to the EDR (cloud-side interim record until the on-vehicle log + sync lands in M3-6).
 - **Maneuver proposal flow** (ICD §6) — edge generates a proposal → cloud `Maneuver` service + decision window → console card → operator decision returns as a regular Mode 1 command; timeout → safe default (edge authoritative).
-- **Pre-departure check** (ICD §7 / LEG-03) — OAD checklist (self-diagnosis auto-pass — a **DEV-13** placeholder until M4-4 wires live vehicle health — + operator verification; operators cannot overwrite self-diagnosis items), safety-critical fail blocks confirmation, and mission start is **fail-closed**: no confirmed checklist (including a missing one) → no start.
+- **Pre-departure check** (ICD §7 / LEG-03) — OAD checklist (self-diagnosis auto-pass — a **DEV-13** placeholder until M4-4 wires live vehicle health — + operator verification; operators cannot overwrite self-diagnosis items), safety-critical fail blocks confirmation, and mission start is **fail-closed**: no confirmed checklist (including a missing one) → no start. Since **audit-7** the whole fleet workflow is an operator action: every mutating call requires the vehicle's active **fencing token** (fleet reads the lock from Valkey, fail-closed), and every checklist creation / item verification / confirmation (incl. **rejected attempts**) and mission transition is an **append-only audit row** (`FleetEventRecord`, ICD §7 step 4 / LEG-04 — DEV-17 tracks the table split, DEV-18 the not-yet-vehicle-bound command envelopes).
 - **Mission lifecycle** — `PENDING → PRE_CHECK → ACTIVE → PAUSED → COMPLETED / ABORTED`.
 - **Disruptive-diagnostic deferral** (ICD §1 footnote) — `RESTART_*` / `UPDATE_CONFIG` deferred on a public approved route unless the vehicle is stationary; edge enforces it from live road speed.
-- **Single-operator lock + handover** (ICD §8 / SEC-05) — fencing token in Valkey; a handover elevates the token so the previous operator's commands are rejected on the vehicle.
+- **Single-operator lock + handover** (ICD §8 / SEC-05) — fencing token in Valkey; a handover elevates the token so the previous operator's commands are rejected on the vehicle. Since **audit-7** handover passes the **same assignment gate** as take-control (SEC-04) and is EDR-attributed to the admin who performed it.
 - **Operator↔vehicle assignment + revocation** (SEC-04/09, M2-4-4) — admin-granted assignments gate take-control (cloud-enforced; `ASSIGNMENT_ENFORCEMENT=true`); revoking severs an active session immediately (lock deleted → commands/heartbeats fail → vehicle watchdog latches). Every grant/revocation is EDR-logged.
+- **Identity binding** (LEG-05, audit-7) — in the cloud (`AUTH_TRUST_APIGW_JWT=true`) the body-supplied `operatorId` must equal the API-GW-verified JWT identity (`cognito:username`/`sub`), and admin actions are attributed to the authenticated admin — an authenticated operator can no longer act (and be audit-attributed) as someone else. Local dev skips the binding (no identity provider).
+- **Command-channel honesty** (ICD §3, audit-7) — a publish that cannot reach the broker returns **503 PUBLISH_FAILED** (plus an EDR row) instead of a fake success — critical for E-STOP, which must not silently drop; and a command with no vehicle ACK within TTL+grace gets a **NO_ACK** EDR row (visibility only; the retry policy comes with the M2-5 IoT Core backbone). The edge additionally rejects envelopes addressed to a **different vehicle** (`UNAUTHORIZED`) and refuses maneuver decisions arriving **after the decision window** (safe default wins, ICD §6).
 - **Permit-gated zone change** (ICD §1) — **cloud side only (Gate 1)** so far: opening Mode 2 on a public route (→ `public_test_permit`) is controlled + logged, not an instant override — it requires a cantonal permit (`permitId` + validity window) and reverts to the safe default when the permit lapses. **Not yet end-to-end:** today the cloud zone-change does **not** reach the vehicle — the edge runs from its own `EDGE_ZONE_TYPE` env, so a cloud override is ignored on the vehicle. Delivery to the edge (Device Shadow) lands in **M2-5**, and edge permit consumption (`validFrom`, speed limit) in **M3-5**. The contradiction is fail-safe (the edge stays on its stricter local zone), but the feature is not yet wired through.
 - **Live map** (AD-15) — swisstopo tiles via MapLibre, vehicle position + approved-zone overlay.
 
@@ -115,11 +117,11 @@ Then open **http://localhost:3000**.
 With infra + all services + the edge running:
 
 ```bash
-# Edge Gate-2 smoke test — expect 12/12 pass
+# Edge Gate-2 smoke test — expect 13/13 pass
 node services/command/test/smoke-edge.cjs
 
-# Assignment + revocation (SEC-04/09) — expect 9/9 pass. Needs the command
-# service restarted with enforcement on (dev default is off):
+# Assignment + revocation + handover gate (SEC-04/09) — expect 13/13 pass.
+# Needs the command service restarted with enforcement on (dev default is off):
 #   cd services/command && ASSIGNMENT_ENFORCEMENT=true node dist/main
 node services/command/test/smoke-assignment.cjs
 
@@ -129,8 +131,11 @@ node services/command/test/smoke-maneuver.cjs
 # Zone change / test-permit gate (ICD §1) — expect 6/6 pass
 node services/command/test/smoke-zone.cjs
 
-# Fleet & mission + pre-departure check — expect 20/20 pass
-#   (clears Mission + PreDepartureCheck rows first; safe in local dev)
+# Fleet & mission + pre-departure check + audit rows — expect 25/25 pass.
+# Needs the COMMAND service (4000) + Valkey up too: the fleet workflows are
+# fencing-token-gated since audit-7 (the test takes control first).
+#   (clears Mission + PreDepartureCheck rows first; safe in local dev —
+#    FleetEventRecord is append-only audit and is deliberately NOT cleared)
 docker exec joppilot_postgres psql -U joppilot -d joppilot_db \
   -c 'DELETE FROM fleet."Mission"; DELETE FROM fleet."PreDepartureCheck";'
 node services/fleet/test/smoke-fleet.cjs
@@ -138,9 +143,11 @@ node services/fleet/test/smoke-fleet.cjs
 # Contract unit tests
 pnpm --filter @joppilot/contract test
 
-# Postgres tables — expect EventDataRecord · telemetry_samples · Mission ·
-# PreDepartureCheck (NOT TelemetryRecord)
-docker exec joppilot_postgres psql -U joppilot -d joppilot_db -c "\dt"
+# Postgres tables — expect command.EventDataRecord · command.VehicleAssignment ·
+# fleet.Mission · fleet.PreDepartureCheck · fleet.FleetEventRecord ·
+# public.telemetry_samples
+docker exec joppilot_postgres psql -U joppilot -d joppilot_db \
+  -c '\dt command.*' -c '\dt fleet.*' -c '\dt public.*'
 ```
 
 ---
@@ -232,8 +239,12 @@ curl -X POST -H "Authorization: Bearer <OPERATOR_ID_TOKEN>" -H 'Content-Type: ap
   -d '{"zone":"depot"}' https://<api_endpoint>/api/command/VEH-001/zone
 # → 403 {"reason":"UNAUTHORIZED",...}; the same call with an admin-group token succeeds.
 
-# Fleet pre-departure workflow (LEG-03) end-to-end:
-curl -X POST -H "Authorization: Bearer <ID_TOKEN>" https://<api_endpoint>/api/fleet/VEH-001/mission
+# Fleet pre-departure workflow (LEG-03) end-to-end — token-gated since
+# audit-7: assign + take-control first (above), then pass operatorId + the
+# fencing token in the body:
+curl -X POST -H "Authorization: Bearer <ID_TOKEN>" -H 'Content-Type: application/json' \
+  -d '{"operatorId":"OP-1","token":"<FENCING_TOKEN>"}' \
+  https://<api_endpoint>/api/fleet/VEH-001/mission
 
 # The internal ALB does NOT answer from the internet — a timeout here is correct
 # behaviour (proof that API Gateway is the only entry), not an error:
@@ -245,6 +256,13 @@ a user — invite-only). Gotcha: the authorizer's audience is the app client id;
 valid token still 401s, send the **ID token** (Cognito access tokens have no `aud`).
 The RolesGuard reads the role from the ID token's `cognito:groups` claim — put admin
 users in the Cognito `admin` group, operators in `operator`.
+
+> **Identity binding (audit-7, LEG-05):** in the cloud the body-supplied
+> `operatorId` must equal the caller's Cognito identity (`cognito:username`,
+> falling back to `sub`) or the call gets **403 IDENTITY_MISMATCH** — so in the
+> curl examples above, `OP-1` must literally be the Cognito username of the
+> user whose token you send, and admins must be assigned/attributed under
+> their own username. Local dev (no identity provider) skips the binding.
 
 ### Cost control (stop paying overnight)
 

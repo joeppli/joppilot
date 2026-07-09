@@ -145,7 +145,18 @@ export class SessionService {
     });
 
     const topic = `joppilot/v1/vehicles/${vehicleId}/estop`; // E-STOP/SafeStop topic
-    this.mqttService.publish(topic, envelope);
+    if (!this.mqttService.publish(topic, envelope)) {
+      // The vehicle's own watchdog is the authoritative failsafe (RES-01) —
+      // it latches on the same silence that killed this publish. Record the
+      // failed attempt so the EDR chain shows what the cloud tried (LEG-04).
+      await this.prisma.eventDataRecord.create({
+        data: {
+          commandId, correlationId, vehicleId, issuer: 'SYSTEM',
+          action: 'SAFE_STOP', status: 'PUBLISH_FAILED',
+          details: { note: 'Deadman SAFE_STOP could not be published (MQTT down); vehicle watchdog covers the failsafe.' },
+        },
+      });
+    }
   }
 
   async validateToken(vehicleId: string, operatorId: string, token: string): Promise<boolean> {

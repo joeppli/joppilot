@@ -1,10 +1,11 @@
-import { Controller, Post, Get, Param, Body, Logger, UnauthorizedException, BadRequestException, ForbiddenException, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Param, Body, Req, Logger, UnauthorizedException, BadRequestException, ForbiddenException, ServiceUnavailableException, UseGuards } from '@nestjs/common';
 import { MqttService } from './mqtt.service';
 import { SessionService } from './session.service';
 import { PrismaService } from './prisma.service';
 import { ZoneService } from './zone.service';
 import { AssignmentService } from './assignment.service';
 import { Roles, RolesGuard } from './roles.guard';
+import { requireOperatorIdentity, actorFrom } from './identity';
 import {
   CommandEnvelope,
   CommandEnvelopeSchema,
@@ -32,7 +33,10 @@ export class CommandController {
   ) {}
 
   @Post(':vehicleId/take-control')
-  async takeControl(@Param('vehicleId') vehicleId: string, @Body('operatorId') operatorId: string) {
+  async takeControl(@Param('vehicleId') vehicleId: string, @Body('operatorId') operatorId: string, @Req() req: any) {
+    // LEG-05: the claimed operatorId must be the authenticated caller — the
+    // EDR chain attributes every later command to this id (audit-7 finding 3).
+    requireOperatorIdentity(req, operatorId);
     // SEC-04: control/supervision authority is valid only for ASSIGNED
     // vehicles. Checked BEFORE the lock so an unassigned operator can never
     // hold even a transient token.
@@ -57,15 +61,19 @@ export class CommandController {
     return { status: 'success', token: result.token, issuedAt: result.issuedAt };
   }
 
-  /** SEC-04: grant an operator control authority over a vehicle. Admin-only. */
+  /** SEC-04: grant an operator control authority over a vehicle. Admin-only.
+   *  The recorded actor is the authenticated admin identity in the cloud —
+   *  the body value is a local-dev fallback only (LEG-05). */
   @Roles('admin')
   @Post(':vehicleId/assign')
   async assign(
     @Param('vehicleId') vehicleId: string,
     @Body('operatorId') operatorId: string,
-    @Body('assignedBy') assignedBy: string = 'ADMIN',
+    @Body('assignedBy') assignedByBody: string | undefined,
+    @Req() req: any,
   ) {
     if (!operatorId) throw new BadRequestException('operatorId is required');
+    const assignedBy = actorFrom(req, assignedByBody);
     const result = await this.assignments.assign(vehicleId, operatorId, assignedBy);
     await this.logEdr(uuidv4(), vehicleId, assignedBy, 'ASSIGN_OPERATOR', 'ACK', { operatorId, ...result });
     return { status: 'success', vehicleId, operatorId, ...result };
@@ -82,9 +90,11 @@ export class CommandController {
   async unassign(
     @Param('vehicleId') vehicleId: string,
     @Body('operatorId') operatorId: string,
-    @Body('revokedBy') revokedBy: string = 'ADMIN',
+    @Body('revokedBy') revokedByBody: string | undefined,
+    @Req() req: any,
   ) {
     if (!operatorId) throw new BadRequestException('operatorId is required');
+    const revokedBy = actorFrom(req, revokedByBody);
     const result = await this.assignments.revoke(vehicleId, operatorId, revokedBy);
     await this.logEdr(uuidv4(), vehicleId, revokedBy, 'REVOKE_OPERATOR', 'ACK', { operatorId, ...result });
     return { status: 'success', vehicleId, operatorId, ...result };
@@ -100,8 +110,10 @@ export class CommandController {
   async heartbeat(
     @Param('vehicleId') vehicleId: string,
     @Body('operatorId') operatorId: string,
-    @Body('token') token: string
+    @Body('token') token: string,
+    @Req() req: any
   ) {
+    requireOperatorIdentity(req, operatorId);
     const isAlive = await this.sessionService.heartbeat(vehicleId, operatorId, token);
     if (isAlive) {
       // Relay the operator-liveness ping to the Edge node to reset its watchdog.
@@ -123,8 +135,11 @@ export class CommandController {
     @Param('vehicleId') vehicleId: string,
     @Body('operatorId') operatorId: string,
     @Body('token') token: string,
-    @Body('payload') payload: unknown
+    @Body('payload') payload: unknown,
+    @Req() req: any
   ) {
+    // 0. LEG-05: bind the claimed operatorId to the authenticated identity.
+    requireOperatorIdentity(req, operatorId);
     // 1. Single-operator lock (SEC-05 / ICD §8)
     const isValid = await this.sessionService.validateToken(vehicleId, operatorId, token);
     if (!isValid) throw new UnauthorizedException('Invalid fencing token. You do not have control.');
@@ -173,8 +188,10 @@ export class CommandController {
   async triggerEStop(
     @Param('vehicleId') vehicleId: string,
     @Body('operatorId') operatorId: string,
-    @Body('token') token: string
+    @Body('token') token: string,
+    @Req() req: any
   ) {
+    requireOperatorIdentity(req, operatorId);
     const isValid = await this.sessionService.validateToken(vehicleId, operatorId, token);
     if (!isValid) throw new UnauthorizedException('Invalid fencing token. You do not have control.');
 
@@ -187,8 +204,10 @@ export class CommandController {
   async clearSafeStop(
     @Param('vehicleId') vehicleId: string,
     @Body('operatorId') operatorId: string,
-    @Body('token') token: string
+    @Body('token') token: string,
+    @Req() req: any
   ) {
+    requireOperatorIdentity(req, operatorId);
     const isValid = await this.sessionService.validateToken(vehicleId, operatorId, token);
     if (!isValid) throw new UnauthorizedException('Invalid fencing token. You do not have control.');
     this.logger.log(`CLEAR_SAFE_STOP (authorized latch release) for ${vehicleId} by ${operatorId}`);
@@ -202,11 +221,26 @@ export class CommandController {
   async handover(
     @Param('vehicleId') vehicleId: string,
     @Body('operatorId') operatorId: string,
+    @Req() req: any,
   ) {
+    if (!operatorId) throw new BadRequestException('operatorId is required');
+    const admin = actorFrom(req);
+    // SEC-04 (audit-7 finding 2): handover mints a fencing token like
+    // take-control does, so it passes the SAME assignment gate — an admin
+    // cannot hand a vehicle to an operator who was never assigned to it.
+    if (!(await this.assignments.canControl(vehicleId, operatorId))) {
+      await this.logEdr(uuidv4(), vehicleId, admin, 'HANDOVER', 'REJECTED', { reason: 'NO_ASSIGNMENT', newOperator: operatorId });
+      throw new ForbiddenException({
+        reason: 'NO_ASSIGNMENT',
+        details: `Cannot hand over ${vehicleId}: operator '${operatorId}' has no active assignment (SEC-04).`,
+      });
+    }
     const result = await this.sessionService.handover(vehicleId, operatorId);
     if (!result) throw new BadRequestException('Handover failed');
-    await this.logEdr(uuidv4(), vehicleId, operatorId, 'HANDOVER', 'ACK', { newOperator: operatorId, issuedAt: result.issuedAt });
-    this.logger.log(`HANDOVER completed for ${vehicleId} → ${operatorId}`);
+    // LEG-05: the actor is the admin who performed the intervention, not the
+    // operator who received the token.
+    await this.logEdr(uuidv4(), vehicleId, admin, 'HANDOVER', 'ACK', { newOperator: operatorId, issuedAt: result.issuedAt });
+    this.logger.log(`HANDOVER completed for ${vehicleId} → ${operatorId} (by ${admin})`);
     return { status: 'success', token: result.token, issuedAt: result.issuedAt };
   }
 
@@ -230,11 +264,14 @@ export class CommandController {
   async setZone(
     @Param('vehicleId') vehicleId: string,
     @Body('zone') zone: ZoneType,
-    @Body('issuer') issuer: string = 'ADMIN',
+    @Req() req: any,
+    @Body('issuer') issuerBody?: string,
     @Body('permitId') permitId?: string,
     @Body('reason') reason?: string,
     @Body('validUntil') validUntil?: number,
   ) {
+    // LEG-05: the recorded issuer is the authenticated admin in the cloud.
+    const issuer = actorFrom(req, issuerBody);
     // Validate the target zone against the contract.
     const parsed = ZoneTypeSchema.safeParse(zone);
     if (!parsed.success) {
@@ -306,9 +343,45 @@ export class CommandController {
     await this.logEdr(commandId, vehicleId, operatorId, payload.action, 'PENDING', envelope, envelope.correlationId);
 
     const topic = `joppilot/v1/vehicles/${vehicleId}/${channel}`;
-    this.mqttService.publish(topic, envelope);
+    // Audit-7 finding 4: a silently dropped publish must never look like a
+    // sent command — for E-STOP the ICD (§3) demands first-attempt delivery,
+    // so the operator needs the failure signal IMMEDIATELY to fall back to
+    // another action. EDR keeps both rows: the PENDING attempt + the failure.
+    if (!this.mqttService.publish(topic, envelope)) {
+      await this.logEdr(commandId, vehicleId, operatorId, payload.action, 'PUBLISH_FAILED', { topic }, envelope.correlationId);
+      throw new ServiceUnavailableException({
+        reason: 'PUBLISH_FAILED',
+        details: `Command channel to ${vehicleId} is down — ${payload.action} was NOT sent to the vehicle.`,
+      });
+    }
+
+    // ICD §3: every command is acknowledged. If no ACK/NACK lands within the
+    // TTL (+grace), append a NO_ACK record so the exchange has a recorded
+    // outcome (audit-7 finding 6). Visibility only — the retry policy comes
+    // with the M2-5 IoT Core backbone. Per-instance timer, same class and
+    // closure trigger as the deadman timers (DEV-11).
+    this.watchForAck(commandId, vehicleId, operatorId, payload.action, envelope.correlationId, envelope.ttlMs);
 
     return { status: 'pending', commandId, action: payload.action, mode, message: `${payload.action} published` };
+  }
+
+  private watchForAck(commandId: string, vehicleId: string, operatorId: string, action: string, correlationId: string, ttlMs: number) {
+    const timer = setTimeout(async () => {
+      try {
+        const ack = await this.prisma.eventDataRecord.findFirst({
+          where: { commandId, issuer: 'VEHICLE' },
+        });
+        if (ack) return;
+        await this.logEdr(commandId, vehicleId, operatorId, action, 'NO_ACK', {
+          note: `No ACK/NACK from the vehicle within ttl ${ttlMs}ms + grace (ICD §3).`,
+        }, correlationId);
+        this.logger.warn(`NO_ACK recorded for ${action} (${commandId}) on ${vehicleId}`);
+      } catch (e) {
+        this.logger.error(`NO_ACK watcher failed for ${commandId}`, e as Error);
+      }
+    }, ttlMs + 3000);
+    // Do not hold the process open for a watcher (tests, graceful shutdown).
+    timer.unref?.();
   }
 
   private async logEdr(

@@ -118,12 +118,13 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     this.lastHeartbeat.set(hb.vehicleId, Date.now());
     this.telemetryGateway.broadcastHeartbeat(hb.vehicleId, hb);
 
-    // The vehicle itself reports a latched safe-stop → surface immediately.
-    if (hb.latched) {
-      this.setLinkStatus(hb.vehicleId, 'LOST');
-    } else {
-      this.setLinkStatus(hb.vehicleId, 'HEALTHY');
-    }
+    // A heartbeat received = the LINK is healthy, latched or not. A latched
+    // vehicle must NOT be shown as "link lost" (audit-7 finding 8): telling
+    // the operator the connection is gone when the vehicle is connected and
+    // safe-stopped misdirects the response. The latch itself reaches the
+    // console via the heartbeat broadcast above and the SAFE_STOPPED
+    // vehicle state in telemetry.
+    this.setLinkStatus(hb.vehicleId, 'HEALTHY');
   }
 
   private evaluateLinks() {

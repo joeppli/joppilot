@@ -1,5 +1,6 @@
-import { Controller, Post, Param, Body, Logger, NotFoundException, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Param, Body, Req, Logger, NotFoundException, UnauthorizedException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { ManeuverService } from './maneuver.service';
+import { requireOperatorIdentity } from './identity';
 import { SessionService } from './session.service';
 import { MqttService } from './mqtt.service';
 import { PrismaService } from './prisma.service';
@@ -28,8 +29,12 @@ export class ManeuverController {
     @Body('operatorId') operatorId: string,
     @Body('token') token: string,
     @Body('decision') decision: 'CONFIRM' | 'REJECT' | 'SELECT_ALTERNATIVE',
+    @Req() req: any,
     @Body('optionId') optionId?: string,
   ) {
+    // LEG-05: the decision is EDR-attributed to operatorId — bind it to the
+    // authenticated identity (audit-7 finding 3).
+    requireOperatorIdentity(req, operatorId);
     const proposal = this.maneuverService.getActiveProposalById(proposalId);
     if (!proposal) {
       throw new NotFoundException(`No active proposal found with id '${proposalId}' (may have timed out).`);
@@ -94,7 +99,21 @@ export class ManeuverController {
     });
 
     const topic = `joppilot/v1/vehicles/${vehicleId}/command`;
-    this.mqttService.publish(topic, envelope);
+    // Audit-7 finding 4: a dropped decision must fail loudly — the proposal
+    // stays active so the operator can retry (or the edge applies the safe
+    // default on timeout, which is exactly the ICD §6 fallback).
+    if (!this.mqttService.publish(topic, envelope)) {
+      await this.prisma.eventDataRecord.create({
+        data: {
+          commandId, correlationId: proposalId, vehicleId, issuer: operatorId,
+          action: payload.action, status: 'PUBLISH_FAILED', details: { topic },
+        },
+      });
+      throw new ServiceUnavailableException({
+        reason: 'PUBLISH_FAILED',
+        details: `Decision channel to ${vehicleId} is down — ${payload.action} was NOT sent.`,
+      });
+    }
     this.maneuverService.resolveProposal(proposalId);
 
     this.logger.log(`Maneuver decision dispatched: ${decision} for proposal ${proposalId} by ${operatorId}`);

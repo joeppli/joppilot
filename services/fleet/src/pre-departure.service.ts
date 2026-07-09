@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { CheckItem } from '@joppilot/contract';
-import { v4 as uuidv4 } from 'uuid';
 
 const DEFAULT_CHECKLIST: Omit<CheckItem, 'status'>[] = [
   { itemId: 'brakes-main',  label: 'Main braking system',          category: 'BRAKES',       safetyCritical: true,  source: 'SELF_DIAGNOSIS' },
@@ -22,7 +21,7 @@ export class PreDepartureService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async createChecklist(vehicleId: string): Promise<{ checklistId: string; items: CheckItem[] }> {
+  async createChecklist(vehicleId: string, createdBy: string): Promise<{ checklistId: string; items: CheckItem[] }> {
     // DEV-13 (accepted deviation): SELF_DIAGNOSIS items are auto-PASS
     // placeholders — the sim edge has no fault injection yet. ICD §7 requires
     // these results to come from the vehicle's live self-diagnosis; wire them
@@ -33,20 +32,37 @@ export class PreDepartureService {
       status: tpl.source === 'SELF_DIAGNOSIS' ? 'PASS' : 'PENDING',
     }));
 
-    const record = await this.prisma.preDepartureCheck.create({
-      data: {
-        vehicleId,
-        status: 'IN_PROGRESS',
-        items: JSON.parse(JSON.stringify(items)),
-      },
+    // The checklist and its audit row are one atomic fact (LEG-03/04).
+    const record = await this.prisma.$transaction(async (tx) => {
+      const rec = await tx.preDepartureCheck.create({
+        data: {
+          vehicleId,
+          status: 'IN_PROGRESS',
+          items: JSON.parse(JSON.stringify(items)),
+        },
+      });
+      await tx.fleetEventRecord.create({
+        data: {
+          correlationId: rec.id, vehicleId, issuer: createdBy,
+          action: 'CHECKLIST_CREATED', status: 'ACK',
+          details: { items },
+        },
+      });
+      return rec;
     });
 
-    this.logger.log(`Pre-departure checklist created: ${record.id} for ${vehicleId}`);
+    this.logger.log(`Pre-departure checklist created: ${record.id} for ${vehicleId} (by ${createdBy})`);
     return { checklistId: record.id, items };
   }
 
-  async updateItem(checklistId: string, itemId: string, status: 'PASS' | 'FAIL', detail?: string) {
+  async updateItem(checklistId: string, itemId: string, status: 'PASS' | 'FAIL', operatorId: string, detail?: string) {
     return this.prisma.$transaction(async (tx) => {
+      // Serialize concurrent updates of the SAME checklist: the items column
+      // is a read-modify-write JSON, so without a lock two concurrent item
+      // verifications can silently drop one (audit-7 finding 9). Same
+      // advisory-lock pattern as assignment.service in the command service.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${checklistId}))`;
+
       const record = await tx.preDepartureCheck.findUnique({ where: { id: checklistId } });
       if (!record) throw new Error('Checklist not found');
       if (record.status === 'CONFIRMED') throw new Error('Checklist already confirmed');
@@ -75,7 +91,17 @@ export class PreDepartureService {
         data: { status: checkStatus, items: JSON.parse(JSON.stringify(items)) },
       });
 
-      this.logger.log(`Checklist ${checklistId} item ${itemId} → ${status}, overall: ${checkStatus}`);
+      // ICD §7 step 4: every check result is an event record (LEG-04) —
+      // atomic with the state change it evidences.
+      await tx.fleetEventRecord.create({
+        data: {
+          correlationId: checklistId, vehicleId: record.vehicleId, issuer: operatorId,
+          action: 'CHECK_ITEM_SET', status,
+          details: { itemId, detail, checklistStatus: checkStatus },
+        },
+      });
+
+      this.logger.log(`Checklist ${checklistId} item ${itemId} → ${status} by ${operatorId}, overall: ${checkStatus}`);
       return { checklistId, checkStatus, items };
     });
   }
@@ -87,6 +113,8 @@ export class PreDepartureService {
     // confirm-then-rollback order would expose a transient CONFIRMED that a
     // concurrent mission-start could act on.
     return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${checklistId}))`;
+
       const record = await tx.preDepartureCheck.findUnique({ where: { id: checklistId } });
       if (!record) throw new Error('Checklist not found');
       if (record.status === 'CONFIRMED') throw new Error('Checklist already confirmed');
@@ -107,6 +135,16 @@ export class PreDepartureService {
         data: { status: 'CONFIRMED', confirmedBy: operatorId, confirmedAt: new Date() },
       });
       if (updated.count === 0) throw new Error('Checklist already confirmed');
+
+      // ICD §7 step 4 / LEG-03: the confirmation IS the legally mandatory
+      // record — the audit row commits atomically with it.
+      await tx.fleetEventRecord.create({
+        data: {
+          correlationId: checklistId, vehicleId: record.vehicleId, issuer: operatorId,
+          action: 'CHECKLIST_CONFIRM', status: 'ACK',
+          details: { items },
+        },
+      });
 
       this.logger.log(`Checklist ${checklistId} CONFIRMED by ${operatorId}`);
       return { checklistId, status: 'CONFIRMED' };

@@ -134,15 +134,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return r.json();
   }, [token, operatorId, vehicleId]);
 
+  // Fleet workflows are operator actions on the vehicle: every mutating call
+  // carries the fencing token (SEC-05) — the fleet service rejects it otherwise.
   const fleetPost = useCallback(async (path: string, body?: object) => {
+    if (!token) return null;
     try {
       const r = await fetch(`${FLEET_API}/api/fleet${path}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: body ? JSON.stringify(body) : '{}',
+        body: JSON.stringify({ operatorId, token, ...(body ?? {}) }),
       });
       return r.ok ? r.json() : null;
     } catch { return null; }
-  }, []);
+  }, [token, operatorId]);
 
   const fleetGet = useCallback(async (path: string) => {
     try { const r = await fetch(`${FLEET_API}/api/fleet${path}`); return r.ok ? r.json() : null; }
@@ -186,11 +189,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const hasPending = checkItems.some(i => i.status === 'PENDING');
     const hasCriticalFail = checkItems.some(i => i.safetyCritical && i.status === 'FAIL');
     if (hasPending || hasCriticalFail) return;
-    const confirmed = await fleetPost(`/pre-departure/${mission.checklistId}/confirm`, { operatorId });
+    const confirmed = await fleetPost(`/pre-departure/${mission.checklistId}/confirm`);
     if (!confirmed) return;
     const d = await fleetPost(`/mission/${mission.missionId}/start`);
     if (d?.status) setMission(prev => (prev ? { ...prev, status: d.status } : null));
-  }, [fleetPost, mission, checkItems, operatorId]);
+  }, [fleetPost, mission, checkItems]);
 
   const missionAction = useCallback(async (action: string) => {
     if (!mission) return;

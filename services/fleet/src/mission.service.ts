@@ -8,7 +8,7 @@ export class MissionService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(vehicleId: string, routeId?: string) {
+  async create(vehicleId: string, createdBy: string, routeId?: string) {
     const activeMission = await this.prisma.mission.findFirst({
       where: { vehicleId, status: { in: ['PENDING', 'PRE_CHECK', 'ACTIVE', 'PAUSED'] } },
     });
@@ -16,11 +16,21 @@ export class MissionService {
       throw new Error(`Vehicle ${vehicleId} already has an active mission: ${activeMission.id}`);
     }
 
-    const mission = await this.prisma.mission.create({
-      data: { vehicleId, routeId, status: 'PENDING' },
+    // Mission row + audit row are one atomic fact (LEG-04).
+    const mission = await this.prisma.$transaction(async (tx) => {
+      const m = await tx.mission.create({
+        data: { vehicleId, routeId, status: 'PENDING' },
+      });
+      await tx.fleetEventRecord.create({
+        data: {
+          correlationId: m.id, vehicleId, issuer: createdBy,
+          action: 'MISSION_CREATE', status: 'ACK', details: { routeId },
+        },
+      });
+      return m;
     });
 
-    this.logger.log(`Mission created: ${mission.id} for ${vehicleId}`);
+    this.logger.log(`Mission created: ${mission.id} for ${vehicleId} by ${createdBy}`);
     return mission;
   }
 
@@ -32,7 +42,7 @@ export class MissionService {
     this.logger.log(`Mission ${missionId} → PRE_CHECK (checklist: ${checklistId})`);
   }
 
-  async start(missionId: string) {
+  async start(missionId: string, startedBy: string) {
     const mission = await this.prisma.mission.findUnique({
       where: { id: missionId },
       include: { checklist: true },
@@ -54,28 +64,37 @@ export class MissionService {
       throw new Error('Cannot start: pre-departure check not confirmed');
     }
 
-    await this.prisma.mission.update({
-      where: { id: missionId },
-      data: { status: 'ACTIVE', startedAt: new Date() },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.mission.update({
+        where: { id: missionId },
+        data: { status: 'ACTIVE', startedAt: new Date() },
+      });
+      await tx.fleetEventRecord.create({
+        data: {
+          correlationId: missionId, vehicleId: mission.vehicleId, issuer: startedBy,
+          action: 'MISSION_START', status: 'ACK',
+          details: { checklistId: mission.checklistId },
+        },
+      });
     });
-    this.logger.log(`Mission ${missionId} STARTED`);
+    this.logger.log(`Mission ${missionId} STARTED by ${startedBy}`);
     return { missionId, status: 'ACTIVE' as MissionStatus };
   }
 
-  async pause(missionId: string) {
-    return this.transition(missionId, 'PAUSED', ['ACTIVE']);
+  async pause(missionId: string, by: string) {
+    return this.transition(missionId, 'PAUSED', ['ACTIVE'], by);
   }
 
-  async resume(missionId: string) {
-    return this.transition(missionId, 'ACTIVE', ['PAUSED']);
+  async resume(missionId: string, by: string) {
+    return this.transition(missionId, 'ACTIVE', ['PAUSED'], by);
   }
 
-  async abort(missionId: string) {
-    return this.transition(missionId, 'ABORTED', ['PENDING', 'PRE_CHECK', 'ACTIVE', 'PAUSED']);
+  async abort(missionId: string, by: string) {
+    return this.transition(missionId, 'ABORTED', ['PENDING', 'PRE_CHECK', 'ACTIVE', 'PAUSED'], by);
   }
 
-  async complete(missionId: string) {
-    return this.transition(missionId, 'COMPLETED', ['ACTIVE']);
+  async complete(missionId: string, by: string) {
+    return this.transition(missionId, 'COMPLETED', ['ACTIVE'], by);
   }
 
   async getActive(vehicleId: string) {
@@ -89,7 +108,7 @@ export class MissionService {
     return this.prisma.mission.findUnique({ where: { id: missionId }, include: { checklist: true } });
   }
 
-  private async transition(missionId: string, to: MissionStatus, fromAllowed: MissionStatus[]) {
+  private async transition(missionId: string, to: MissionStatus, fromAllowed: MissionStatus[], by: string) {
     const mission = await this.prisma.mission.findUnique({ where: { id: missionId } });
     if (!mission) throw new Error('Mission not found');
     if (!fromAllowed.includes(mission.status as MissionStatus)) {
@@ -100,8 +119,17 @@ export class MissionService {
     if (to === 'COMPLETED' || to === 'ABORTED') data.completedAt = new Date();
     if (to === 'ACTIVE' && !mission.startedAt) data.startedAt = new Date();
 
-    await this.prisma.mission.update({ where: { id: missionId }, data });
-    this.logger.log(`Mission ${missionId} → ${to}`);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.mission.update({ where: { id: missionId }, data });
+      // LEG-04: mission transitions are part of the operational event chain.
+      await tx.fleetEventRecord.create({
+        data: {
+          correlationId: missionId, vehicleId: mission.vehicleId, issuer: by,
+          action: `MISSION_${to}`, status: 'ACK', details: { from: mission.status },
+        },
+      });
+    });
+    this.logger.log(`Mission ${missionId} → ${to} by ${by}`);
     return { missionId, status: to };
   }
 }
