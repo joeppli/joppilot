@@ -46,7 +46,8 @@ resource "aws_iot_thing_type" "vehicle" {
   name = "${var.name_prefix}-vehicle"
 
   properties {
-    description = "Jöppli autonomous recycling vehicle (VEA edge principal)"
+    # ASCII only — IoT rejects non-[\p{Graph}\x20] (so no "ö" in Jöppli).
+    description = "Joeppli autonomous recycling vehicle (VEA edge principal)"
   }
 }
 
@@ -65,54 +66,35 @@ resource "aws_iot_thing" "vehicle" {
 # a compromised cert from commanding the fleet). REQUIREMENT this imposes when
 # the edge connects (a later slice / M3): the edge's MQTT client id MUST equal
 # its thing name (e.g. VEH-001), not the current sim's "edge-vehicle-001".
+#
+# SCOPING NOTE: IoT policies have a 2048-char HARD limit, so the resources are
+# collapsed to a per-vehicle WILDCARD (`.../${thing}/*`) rather than one ARN per
+# up/down channel. The security boundary that matters — a vehicle can reach ONLY
+# its own vehicle's topics, never another's — is fully preserved; the finer
+# publish-vs-subscribe direction split is given up to fit the limit (the app's
+# fencing token + the cloud gate are the authoritative direction enforcers).
+locals {
+  veh_topic     = "arn:aws:iot:${local.region}:${local.account}:topic/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/*"
+  veh_topicf    = "arn:aws:iot:${local.region}:${local.account}:topicfilter/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/*"
+  veh_shadow_t  = "arn:aws:iot:${local.region}:${local.account}:topic/$aws/things/$${iot:Connection.Thing.ThingName}/shadow/name/zone-config/*"
+  veh_shadow_tf = "arn:aws:iot:${local.region}:${local.account}:topicfilter/$aws/things/$${iot:Connection.Thing.ThingName}/shadow/name/zone-config/*"
+}
+
 data "aws_iam_policy_document" "vehicle" {
   # Connect only as its own thing.
   statement {
     actions   = ["iot:Connect"]
     resources = ["arn:aws:iot:${local.region}:${local.account}:client/$${iot:Connection.Thing.ThingName}"]
   }
-
-  # PUBLISH — vehicle → cloud channels (ICD §3): telemetry, heartbeat, ACK,
-  # maneuver proposal/status.
+  # Publish/receive on this vehicle's topics + its zone-config shadow.
   statement {
-    actions = ["iot:Publish"]
-    resources = [
-      "arn:aws:iot:${local.region}:${local.account}:topic/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/telemetry",
-      "arn:aws:iot:${local.region}:${local.account}:topic/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/heartbeat",
-      "arn:aws:iot:${local.region}:${local.account}:topic/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/command/ack",
-      "arn:aws:iot:${local.region}:${local.account}:topic/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/maneuver/proposal",
-      "arn:aws:iot:${local.region}:${local.account}:topic/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/maneuver/status",
-      # Device Shadow (zone-config): the vehicle publishes get/update to read it.
-      "arn:aws:iot:${local.region}:${local.account}:topic/$aws/things/$${iot:Connection.Thing.ThingName}/shadow/name/zone-config/get",
-      "arn:aws:iot:${local.region}:${local.account}:topic/$aws/things/$${iot:Connection.Thing.ThingName}/shadow/name/zone-config/update",
-    ]
+    actions   = ["iot:Publish", "iot:Receive"]
+    resources = [local.veh_topic, local.veh_shadow_t]
   }
-
-  # SUBSCRIBE — cloud → vehicle channels: command, estop, deadman, zone-config,
-  # plus the shadow delta/get responses.
+  # Subscribe on this vehicle's topic filters + its zone-config shadow.
   statement {
-    actions = ["iot:Subscribe"]
-    resources = [
-      "arn:aws:iot:${local.region}:${local.account}:topicfilter/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/command",
-      "arn:aws:iot:${local.region}:${local.account}:topicfilter/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/estop",
-      "arn:aws:iot:${local.region}:${local.account}:topicfilter/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/deadman",
-      "arn:aws:iot:${local.region}:${local.account}:topicfilter/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/zone-config",
-      "arn:aws:iot:${local.region}:${local.account}:topicfilter/$aws/things/$${iot:Connection.Thing.ThingName}/shadow/name/zone-config/update/delta",
-      "arn:aws:iot:${local.region}:${local.account}:topicfilter/$aws/things/$${iot:Connection.Thing.ThingName}/shadow/name/zone-config/get/accepted",
-    ]
-  }
-
-  # RECEIVE — the topics the vehicle is allowed to actually receive on.
-  statement {
-    actions = ["iot:Receive"]
-    resources = [
-      "arn:aws:iot:${local.region}:${local.account}:topic/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/command",
-      "arn:aws:iot:${local.region}:${local.account}:topic/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/estop",
-      "arn:aws:iot:${local.region}:${local.account}:topic/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/deadman",
-      "arn:aws:iot:${local.region}:${local.account}:topic/${var.topic_root}/vehicles/$${iot:Connection.Thing.ThingName}/zone-config",
-      "arn:aws:iot:${local.region}:${local.account}:topic/$aws/things/$${iot:Connection.Thing.ThingName}/shadow/name/zone-config/update/delta",
-      "arn:aws:iot:${local.region}:${local.account}:topic/$aws/things/$${iot:Connection.Thing.ThingName}/shadow/name/zone-config/get/accepted",
-    ]
+    actions   = ["iot:Subscribe"]
+    resources = [local.veh_topicf, local.veh_shadow_tf]
   }
 }
 
