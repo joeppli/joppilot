@@ -820,6 +820,20 @@ async fn main() {
                 drop(zs);
                 println!("🗺️  ZONE-CONFIG APPLIED: zone='{}' permit_valid_until={:?} revision={} (signed, ICD §1).",
                     zone, permit_valid_until, revision);
+
+                // audit-8: report the applied config back so the Device Shadow
+                // CONVERGES (desired == reported → no perpetual delta, and an
+                // operator inspecting the shadow sees the vehicle's ACTUAL
+                // zone, not just what was desired). Echo the config we accepted
+                // so reported matches desired exactly. Local (non-shadow)
+                // delivery has nothing to report to.
+                if is_aws {
+                    let reported = serde_json::json!({ "state": { "reported": { "config": doc } } });
+                    let _ = client.publish(
+                        format!("{}/update", shadow_prefix),
+                        QoS::AtLeastOnce, false, reported.to_string(),
+                    ).await;
+                }
                 continue;
             }
 
