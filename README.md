@@ -196,7 +196,7 @@ infra/terraform/
 | M2-4-4 | Rest of the M2-4 scope: operator↔vehicle **assignment model** + take-control gate (SEC-04, `ASSIGNMENT_ENFORCEMENT=true` on the command task), revocation → immediate session severing (SEC-09), **mandatory `correlationId`** end-to-end (SEC-06: envelope schema + EDR column + edge NACK; maneuver chain correlates by `proposalId`) | ✅ |
 | M2-5a | Command signing (Ed25519, ICD §4) enforced on the vehicle + **zone/permit config delivery to the edge** (signed, revision-monotonic; DEV-8 closed) — local MQTT path | ✅ |
 | M2-5b-1 | IoT Core **infrastructure**: thing type + `VEH-001` thing, topic-scoped vehicle/service IoT policies, X.509 cert provisioning (vehicle + service bundles → Secrets Manager), ATS endpoint. Services stay `MQTT_ENABLED=false` (no behaviour change, ~zero idle cost, not in the destroy button). DEV-12 probe passed 2026-07-09 | ✅ authored |
-| M2-5b-2 | Flip `MQTT_ENABLED=true`: mount the service cert bundle into the ECS tasks, connect command/telemetry to IoT Core over mTLS, `zone-config` Device Shadow live | ⏳ |
+| M2-5b-2 | `MQTT_ENABLED=true` for command + telemetry: the IoT service cert bundle is injected **inline** from Secrets Manager (`AWS_CERT_*_PEM`, never on disk), the MQTT clients connect to IoT Core over **mTLS/8883**, and cloud zone changes publish to the `zone-config` Device Shadow. Fleet has no MQTT client — untouched | ✅ authored |
 | later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
 
 ### Ingress path (current)
@@ -280,6 +280,25 @@ mosquitto_sub -h "$EP" -p 8883 --cafile /tmp/ca.pem --cert /tmp/c.pem --key /tmp
   -i VEH-001 -t 'joppilot/v1/vehicles/VEH-001/command' -d
 # In another CloudShell tab, publish to it and watch it arrive; publishing to a
 # DIFFERENT vehicle's topic is denied by the per-thing policy.
+```
+
+**Verify the cloud services are on IoT Core (M2-5b-2)** — after the tasks
+redeploy with `MQTT_ENABLED=true`:
+
+```bash
+# command/telemetry connect over mTLS on boot:
+aws logs tail /ecs/joppilot-dev-command   --since 5m --region eu-central-1 | grep -i "IoT Core\|MQTT"
+aws logs tail /ecs/joppilot-dev-telemetry --since 5m --region eu-central-1 | grep -i "IoT Core\|MQTT"
+# → "Connected to MQTT Broker (AWS IoT Core)"
+
+# A cloud zone change now reaches the zone-config Device Shadow (even with no
+# vehicle connected — the desired state is retained for when VEH-001 joins):
+curl -X POST -H "Authorization: Bearer <ADMIN_ID_TOKEN>" -H 'Content-Type: application/json' \
+  -d '{"zone":"depot","permitId":"SITE-01","validUntil":'$(( ($(date +%s)+3600)*1000 ))'}' \
+  https://<api_endpoint>/api/command/VEH-001/zone
+aws iot-data get-thing-shadow --thing-name VEH-001 --shadow-name zone-config \
+  --region eu-central-1 /dev/stdout | jq .state.desired.config
+# → the signed ZoneConfig document the edge will verify + apply on connect.
 ```
 
 A valid Cognito **bearer token** on the API Gateway call reaches the services (needs

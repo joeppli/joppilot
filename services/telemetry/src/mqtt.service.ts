@@ -49,9 +49,11 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
     if (isAws) {
       this.logger.log('Configuring mTLS for AWS IoT Core...');
-      options.key = fs.readFileSync(process.env.AWS_CERT_PRIVATE_KEY_PATH!);
-      options.cert = fs.readFileSync(process.env.AWS_CERT_CERT_PATH!);
-      options.ca = fs.readFileSync(process.env.AWS_CERT_ROOT_CA_PATH!);
+      // M2-5b-2: inline PEM env (ECS injects the Secrets Manager IoT bundle) or
+      // file paths (mounted certs); inline wins. Mirrors services/command.
+      options.key = process.env.AWS_CERT_PRIVATE_KEY_PEM ?? fs.readFileSync(process.env.AWS_CERT_PRIVATE_KEY_PATH!);
+      options.cert = process.env.AWS_CERT_CERT_PEM ?? fs.readFileSync(process.env.AWS_CERT_CERT_PATH!);
+      options.ca = process.env.AWS_CERT_ROOT_CA_PEM ?? fs.readFileSync(process.env.AWS_CERT_ROOT_CA_PATH!);
     }
 
     this.client = mqtt.connect(options);
