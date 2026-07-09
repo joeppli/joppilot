@@ -158,6 +158,15 @@ locals {
     DB_USERNAME = "${module.rds.master_user_secret_arn}:username::"
     DB_PASSWORD = "${module.rds.master_user_secret_arn}:password::"
   }
+  # M2-5b-2: the IoT cert bundle's fields injected as inline-PEM env vars from
+  # the single service secret (valueFrom JSON-key selectors — never on disk).
+  # AWS_IOT_ENDPOINT is set per-service (plain env) to flip the MQTT client to
+  # mTLS/8883. Only command + telemetry connect (fleet has no MQTT client).
+  iot_secrets = {
+    AWS_CERT_CERT_PEM        = "${module.iot.service_cert_secret_arn}:certificatePem::"
+    AWS_CERT_PRIVATE_KEY_PEM = "${module.iot.service_cert_secret_arn}:privateKey::"
+    AWS_CERT_ROOT_CA_PEM     = "${module.iot.service_cert_secret_arn}:rootCa::"
+  }
 }
 
 # --- M2-5: command-signing keypair (ICD §4) ------------------------------------
@@ -206,12 +215,16 @@ module "service_command" {
     # SEC-04: control authority only for ASSIGNED vehicles — enforced in the
     # cloud; the local sim runs with the check disabled (no admin bootstrap).
     ASSIGNMENT_ENFORCEMENT = "true"
+    # M2-5b-2: connect to IoT Core over mTLS (overrides db_env's "false").
+    MQTT_ENABLED     = "true"
+    AWS_IOT_ENDPOINT = module.iot.iot_endpoint
   })
   # COMMAND_SIGNING_KEY (M2-5, ICD §4): the service is FAIL-CLOSED without it.
-  secrets = merge(local.db_secrets, {
+  # AWS_CERT_*_PEM (M2-5b-2): the IoT client cert bundle, inline from Secrets Manager.
+  secrets = merge(local.db_secrets, local.iot_secrets, {
     COMMAND_SIGNING_KEY = aws_secretsmanager_secret.command_signing_key.arn
   })
-  secret_arns = [module.rds.master_user_secret_arn, aws_secretsmanager_secret.command_signing_key.arn]
+  secret_arns = [module.rds.master_user_secret_arn, aws_secretsmanager_secret.command_signing_key.arn, module.iot.service_cert_secret_arn]
 }
 
 module "service_telemetry" {
@@ -229,15 +242,19 @@ module "service_telemetry" {
   path_patterns          = ["/api/telemetry/*"]
   desired_count          = var.service_desired_count
 
-  # Telemetry writes raw pg into the default `public` schema (DEV-9); it has
-  # no MQTT source until IoT Core (M2-5) — the task is deployed dormant so the
-  # M2-5 wiring lands on running plumbing. DB_SSL: RDS PostgreSQL 15+ forces
-  # TLS (rds.force_ssl=1) and raw node-postgres does not negotiate it on its
-  # own — Prisma (command/fleet) does, hence only telemetry needs the flag
-  # (cert verification deferred — DEV-16).
-  environment = merge(local.db_env, { DB_SCHEMA = "public", DB_SSL = "true" })
-  secrets     = local.db_secrets
-  secret_arns = [module.rds.master_user_secret_arn]
+  # Telemetry writes raw pg into the default `public` schema (DEV-9). DB_SSL:
+  # RDS PostgreSQL 15+ forces TLS (rds.force_ssl=1) and raw node-postgres does
+  # not negotiate it on its own — Prisma (command/fleet) does, hence only
+  # telemetry needs the flag (cert verification deferred — DEV-16).
+  # M2-5b-2: telemetry ingest now connects to IoT Core over mTLS.
+  environment = merge(local.db_env, {
+    DB_SCHEMA        = "public"
+    DB_SSL           = "true"
+    MQTT_ENABLED     = "true"
+    AWS_IOT_ENDPOINT = module.iot.iot_endpoint
+  })
+  secrets     = merge(local.db_secrets, local.iot_secrets)
+  secret_arns = [module.rds.master_user_secret_arn, module.iot.service_cert_secret_arn]
 }
 
 module "service_fleet" {
