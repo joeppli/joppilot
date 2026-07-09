@@ -33,7 +33,7 @@ docker run -d --name joppilot_edge --network host -v "$PWD":/w -w /w/edge/sim \
 ```bash
 node services/command/test/smoke-edge.cjs       # 19/19 — Gate 2 (schema/signature/TTL/token/dedup/mode-spoof/latch/zone-config)
 node services/command/test/smoke-maneuver.cjs   # 11/11 — ICD §6 proposal flow
-node services/command/test/smoke-zone.cjs       # 11/11 — permit-gated zone change + delivery to the vehicle (needs edge up)
+node services/command/test/smoke-zone.cjs       # 12/12 — permit-gated zone change + delivery to the vehicle (needs edge up)
 docker exec joppilot_postgres psql -U joppilot -d joppilot_db \
   -c 'DELETE FROM fleet."Mission"; DELETE FROM fleet."PreDepartureCheck";'   # fleet smoke needs clean tables
 node services/fleet/test/smoke-fleet.cjs        # 25/25 — pre-departure + mission lifecycle + audit rows (needs command svc on 4000)

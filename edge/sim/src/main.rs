@@ -430,15 +430,26 @@ async fn main() {
     let host = if is_aws { aws_endpoint } else { "localhost".to_string() };
     let port = if is_aws { 8883 } else { 1883 };
 
-    let mut mqttoptions = MqttOptions::new("edge-vehicle-001", host.clone(), port);
+    // The vehicle's identity. The AWS IoT vehicle policy scopes every topic to
+    // ${iot:Connection.Thing.ThingName}, which resolves ONLY when the MQTT
+    // client id equals the thing name — so on cloud IoT the client id MUST be
+    // the thing name (default VEH-001). EDGE_VEHICLE_ID overrides both the id
+    // and the topic namespace together (kept in lock-step on purpose).
+    let vehicle_id = env::var("EDGE_VEHICLE_ID").unwrap_or_else(|_| "VEH-001".to_string());
+
+    let mut mqttoptions = MqttOptions::new(vehicle_id.clone(), host.clone(), port);
     mqttoptions.set_keep_alive(Duration::from_secs(5));
 
     if is_aws {
-        println!("Configuring mTLS for AWS IoT Core...");
+        println!("Configuring mTLS for AWS IoT Core (client id / thing = {})...", vehicle_id);
         let ca_cert = fs::read(env::var("AWS_CERT_ROOT_CA_PATH").expect("Missing Root CA")).expect("Failed to read Root CA");
         let client_cert = fs::read(env::var("AWS_CERT_CERT_PATH").expect("Missing Client Cert")).expect("Failed to read Client Cert");
         let client_key = fs::read(env::var("AWS_CERT_PRIVATE_KEY_PATH").expect("Missing Private Key")).expect("Failed to read Private Key");
 
+        // AWS IoT's aws_iot_certificate issues an RSA-2048 keypair; the private
+        // key comes back as PKCS#1 PEM (-----BEGIN RSA PRIVATE KEY-----), which
+        // is exactly rumqttc's Key::RSA. (rumqttc 0.22's Key enum only offers
+        // RSA/ECC — no PKCS#8 variant — so keep the provisioning on RSA.)
         let tls_config = TlsConfiguration::Simple {
             ca: ca_cert,
             alpn: None,
@@ -449,7 +460,10 @@ async fn main() {
 
     let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
 
-    let vehicle_id = "VEH-001";
+    // Leak the id to &'static str (like the former string literal) so the
+    // spawned telemetry/heartbeat/proposal tasks can capture it. It is a single
+    // small string that lives for the whole process, so the "leak" is free.
+    let vehicle_id: &'static str = Box::leak(vehicle_id.into_boxed_str());
     let estop_topic = format!("joppilot/v1/vehicles/{}/estop", vehicle_id);
     let command_topic = format!("joppilot/v1/vehicles/{}/command", vehicle_id);
     let ack_topic = format!("joppilot/v1/vehicles/{}/command/ack", vehicle_id);
@@ -806,6 +820,20 @@ async fn main() {
                 drop(zs);
                 println!("🗺️  ZONE-CONFIG APPLIED: zone='{}' permit_valid_until={:?} revision={} (signed, ICD §1).",
                     zone, permit_valid_until, revision);
+
+                // audit-8: report the applied config back so the Device Shadow
+                // CONVERGES (desired == reported → no perpetual delta, and an
+                // operator inspecting the shadow sees the vehicle's ACTUAL
+                // zone, not just what was desired). Echo the config we accepted
+                // so reported matches desired exactly. Local (non-shadow)
+                // delivery has nothing to report to.
+                if is_aws {
+                    let reported = serde_json::json!({ "state": { "reported": { "config": doc } } });
+                    let _ = client.publish(
+                        format!("{}/update", shadow_prefix),
+                        QoS::AtLeastOnce, false, reported.to_string(),
+                    ).await;
+                }
                 continue;
             }
 

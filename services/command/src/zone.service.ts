@@ -46,17 +46,20 @@ export class ZoneService {
     private readonly signing: SigningService,
   ) {}
 
-  /** Effective zone. A test-permit zone whose validity window has lapsed falls
-   *  back to the safe default — a permit can never silently outlive its window. */
+  /**
+   * Effective zone for Gate 1 — PURE (no side effects). A test-permit zone
+   * whose validity window has lapsed reads back as the safe default so a
+   * permit can never silently outlive its window.
+   *
+   * audit-8: this is a read on the command hot-path (every isModeAllowed call),
+   * so it must not mutate state or publish MQTT. The vehicle enforces the same
+   * validUntil on its own (edge current_zone_type), so no cloud re-delivery is
+   * needed on expiry — the edge reverts autonomously and is authoritative.
+   */
   getZone(vehicleId: string): ZoneType {
     const rec = this.vehicleZones.get(vehicleId);
     if (!rec) return 'public_approved_route';
     if (rec.permit?.validUntil && Date.now() > rec.permit.validUntil) {
-      this.logger.warn(`Permit for ${vehicleId} expired → reverting '${rec.zone}' to public_approved_route`);
-      this.vehicleZones.set(vehicleId, { zone: 'public_approved_route' });
-      // Best-effort delivery of the reverted config; the edge reverts on its
-      // own via the document's validUntil either way (vehicle-authoritative).
-      this.deliverConfig(vehicleId, 'PERMIT-EXPIRY');
       return 'public_approved_route';
     }
     return rec.zone;

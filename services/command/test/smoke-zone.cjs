@@ -108,12 +108,21 @@ function httpPost(path, body, role = 'admin') {
 
   // Session bootstrap (assignment enforcement may be on).
   const OP = `OP-ZONE-SMOKE-${Date.now()}`;
-  let tc = await httpPost(`/api/command/${EV}/take-control`, { operatorId: OP }, 'operator');
-  if (tc.status === 403) {
-    await httpPost(`/api/command/${EV}/assign`, { operatorId: OP, assignedBy: 'ADMIN-SMOKE' });
-    tc = await httpPost(`/api/command/${EV}/take-control`, { operatorId: OP }, 'operator');
-  }
+  const acquire = async () => {
+    let r = await httpPost(`/api/command/${EV}/take-control`, { operatorId: OP }, 'operator');
+    if (r.status === 403) {
+      await httpPost(`/api/command/${EV}/assign`, { operatorId: OP, assignedBy: 'ADMIN-SMOKE' });
+      r = await httpPost(`/api/command/${EV}/take-control`, { operatorId: OP }, 'operator');
+    }
+    return r;
+  };
+  let tc = await acquire();
+  // take-control is NX on a 6 s fencing lock; a prior run's lock can still be
+  // alive if this runs back-to-back — wait it out once so reruns aren't flaky.
+  if (!tc.body?.token) { await wait(6500); tc = await acquire(); }
   const token = tc.body?.token;
+  assert('take-control', !!token, `${tc.status}: ${JSON.stringify(tc.body)}`);
+  if (!token) { console.log('\n=== aborted: could not take control ==='); process.exit(1); }
   const hb = setInterval(() => httpPost(`/api/command/${EV}/heartbeat`, { operatorId: OP, token }, 'operator').catch(() => {}), 2000);
   await httpPost(`/api/command/${EV}/heartbeat`, { operatorId: OP, token }, 'operator');
 
@@ -134,6 +143,10 @@ function httpPost(path, body, role = 'admin') {
   const toDepot = await httpPost(`/api/command/${EV}/zone`, { zone: 'depot', permitId: 'SITE-DEPOT-GL-01', validUntil: Date.now() + 3600_000 });
   assert('depot change delivered to vehicle', toDepot.status === 201 && toDepot.body?.delivered === true, JSON.stringify(toDepot.body));
   await wait(400);
+  // Refresh the fencing lock (6 s TTL) right before using the token — the long
+  // sequential zone-change section can otherwise let it lapse between the
+  // 2 s heartbeat ticks.
+  await httpPost(`/api/command/${EV}/heartbeat`, { operatorId: OP, token }, 'operator');
   const creep = await httpPost(`/api/command/${EV}/command`, { operatorId: OP, token, payload: { action: 'CREEP', speedKmh: 2 } }, 'operator');
   const creepAck = creep.body?.commandId ? await waitAck(creep.body.commandId) : undefined;
   assert('mode2 ACCEPTED on vehicle after depot config (DEV-8)', creepAck?.status === 'ACK', JSON.stringify({ creep: creep.body, ack: creepAck }));
@@ -142,6 +155,7 @@ function httpPost(path, body, role = 'admin') {
   const back = await httpPost(`/api/command/${EV}/zone`, { zone: 'public_approved_route' });
   assert('revert delivered to vehicle', back.status === 201 && back.body?.delivered === true, JSON.stringify(back.body));
   await wait(400);
+  await httpPost(`/api/command/${EV}/heartbeat`, { operatorId: OP, token }, 'operator');
   // Gate 1 already refuses MODE2 in this zone (cloud + edge agree post-delivery).
   const creep2 = await httpPost(`/api/command/${EV}/command`, { operatorId: OP, token, payload: { action: 'CREEP', speedKmh: 2 } }, 'operator');
   assert('mode2 refused after revert', creep2.status === 403 && creep2.body?.reason === 'MODE_MISMATCH', JSON.stringify(creep2.body));

@@ -36,7 +36,7 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 - **Permit-gated zone change, delivered to the vehicle** (ICD §1, M2-5 — **DEV-8 closed**) — since M2-5 **every Mode-2-capable zone type** (`public_test_permit`, `depot`, `private`, `permitted_test`) requires an authorization artifact (`permitId` + `validUntil`); the change is published to the vehicle as a **signed, revision-monotonic ZoneConfig document** (retained MQTT topic locally, the `zone-config` named Device Shadow on AWS IoT). The edge verifies the signature against its pinned key, ignores stale/foreign/unverifiable documents (fail-safe: stays on its stricter current zone) and enforces `validUntil` **on the vehicle** — past the window it reverts to `public_approved_route` on its own. `EDGE_ZONE_TYPE` only seeds the initial state. Edge enforcement of `validFrom` + speed limit follows in **M3-5**; the geometry-validated canton zone catalog stays open (DEV-14).
 - **Live map** (AD-15) — swisstopo tiles via MapLibre, vehicle position + approved-zone overlay.
 
-> **Not yet** (each now has a slot in the timeline): RBAC identity is wired in the cloud since **M2-4-3** — the deployed services read the role from the API-GW-verified `cognito:groups` claim (`AUTH_TRUST_APIGW_JWT=true`; the `x-operator-role` header remains a **local-dev-only** convenience). The rest of the M2-4 scope landed with **M2-4-4**: operator↔vehicle **assignment model** + assignment check on take-control (SEC-04, cloud-enforced via `ASSIGNMENT_ENFORCEMENT=true`), revocation→immediate session severing (SEC-09: lock deleted → commands/heartbeats fail → vehicle watchdog latches), and **mandatory `correlationId`** (SEC-06: Gate 1 generates, EDR column carries, edge NACKs without it; the maneuver chain correlates by `proposalId`). **Command signing + zone-config delivery landed with M2-5 (local path)**; the remaining M2-5 piece is the **IoT Core infrastructure** (X.509/mTLS provisioning, real Device Shadow) — gated on the DEV-12 free-plan probe. Then: log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). Track: `.claude/joppilot_project_timeline.md`.
+> **Not yet** (each now has a slot in the timeline): RBAC identity is wired in the cloud since **M2-4-3** — the deployed services read the role from the API-GW-verified `cognito:groups` claim (`AUTH_TRUST_APIGW_JWT=true`; the `x-operator-role` header remains a **local-dev-only** convenience). The rest of the M2-4 scope landed with **M2-4-4**: operator↔vehicle **assignment model** + assignment check on take-control (SEC-04, cloud-enforced via `ASSIGNMENT_ENFORCEMENT=true`), revocation→immediate session severing (SEC-09: lock deleted → commands/heartbeats fail → vehicle watchdog latches), and **mandatory `correlationId`** (SEC-06: Gate 1 generates, EDR column carries, edge NACKs without it; the maneuver chain correlates by `proposalId`). **M2-5 is complete** — command signing + signed zone-config Device Shadow delivery, the **IoT Core backbone** (things, topic-scoped X.509/mTLS policies, provisioning) and command/telemetry connected over mTLS; the sim edge can run against cloud IoT for the full A-boundary. Then: log sync (**M3-6**), dual-path E-STOP / WORM audit / graduated failsafe / video KVS WebRTC (**August**). Track: `.claude/joppilot_project_timeline.md`.
 
 ---
 
@@ -132,7 +132,7 @@ node services/command/test/smoke-assignment.cjs
 node services/command/test/smoke-maneuver.cjs
 
 # Zone change / permit gate + delivery to the vehicle (ICD §1, DEV-8) —
-# expect 11/11 pass. Needs mosquitto + the edge running (like smoke-edge).
+# expect 12/12 pass. Needs mosquitto + the edge running (like smoke-edge).
 node services/command/test/smoke-zone.cjs
 
 # Fleet & mission + pre-departure check + audit rows — expect 25/25 pass.
@@ -300,6 +300,51 @@ aws iot-data get-thing-shadow --thing-name VEH-001 --shadow-name zone-config \
   --region eu-central-1 /dev/stdout | jq .state.desired.config
 # → the signed ZoneConfig document the edge will verify + apply on connect.
 ```
+
+**Connect the sim edge to cloud IoT Core — full A-boundary end-to-end (M2-5, slice C).**
+The Rust sim can run against the cloud broker instead of local mosquitto. Fetch
+the provisioned material in **CloudShell**, then run the edge on a machine with
+Rust (copy the four cert files + the two values over):
+
+```bash
+# 1. Vehicle cert bundle (provisioned in M2-5b-1) → files:
+SEC=$(aws secretsmanager get-secret-value --secret-id joppilot-dev-iot-vehicle-VEH-001 \
+  --query SecretString --output text --region eu-central-1)
+echo "$SEC" | jq -r .certificatePem > veh.cert.pem
+echo "$SEC" | jq -r .privateKey     > veh.key.pem
+echo "$SEC" | jq -r .rootCa         > veh.ca.pem
+echo "$SEC" | jq -r .iotEndpoint                       # → AWS_IOT_ENDPOINT
+
+# 2. The cloud's signing PUBLIC key as the raw base64 the edge pins — derived
+#    from the signing private key (only the vehicle ever sees the public half):
+aws secretsmanager get-secret-value --secret-id joppilot-dev-command-signing-key \
+  --query SecretString --output text --region eu-central-1 \
+  | openssl pkey -pubout -outform DER | tail -c 32 | base64   # → EDGE_CLOUD_PUBKEY
+```
+
+```bash
+# 3. Run the sim against cloud IoT Core. The client id MUST be the thing name
+#    (VEH-001) — the vehicle IoT policy scopes topics to it (SEC-04).
+cd edge/sim && \
+AWS_IOT_ENDPOINT=<iotEndpoint> \
+AWS_CERT_ROOT_CA_PATH=veh.ca.pem \
+AWS_CERT_CERT_PATH=veh.cert.pem \
+AWS_CERT_PRIVATE_KEY_PATH=veh.key.pem \
+EDGE_CLOUD_PUBKEY=<rawPubkeyB64> \
+EDGE_ZONE_TYPE=public_approved_route \
+cargo run
+# → "Connected to MQTT Broker (AWS IoT Core (client id / thing = VEH-001))"
+#   telemetry + heartbeat flow up; the zone-config shadow is fetched on connect.
+```
+
+Then drive the **whole** cloud→vehicle path from an admin token (as in the
+curl block above): `assign` → `take-control` → `POST /command`. The command is
+signed by Gate 1, crosses IoT Core over mTLS, and the sim's Gate 2 verifies the
+signature + zone matrix and ACKs on `.../command/ack` (watch the edge stdout).
+Keep heartbeats going (loop the `/heartbeat` call) or the edge latches a
+safe-stop after ~3 s of cloud silence — that latch is correct RES-01 behaviour,
+not a failure. A cloud `POST /zone` now reaches the sim via the Device Shadow
+and flips its Mode-2 gate live.
 
 A valid Cognito **bearer token** on the API Gateway call reaches the services (needs
 a user — invite-only). Gotcha: the authorizer's audience is the app client id; if a
