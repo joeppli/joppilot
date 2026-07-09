@@ -7,7 +7,8 @@ import {
   CommandAckSchema,
   ManeuverProposalSchema,
   ManeuverProposalStatusUpdateSchema,
-  HeartbeatSchema
+  HeartbeatSchema,
+  ZoneConfigSchema
 } from '../src/index';
 
 const schemasDir = path.resolve(process.cwd(), 'schemas');
@@ -29,3 +30,4 @@ writeSchema('CommandAck', CommandAckSchema);
 writeSchema('ManeuverProposal', ManeuverProposalSchema);
 writeSchema('ManeuverProposalStatusUpdate', ManeuverProposalStatusUpdateSchema);
 writeSchema('Heartbeat', HeartbeatSchema);
+writeSchema('ZoneConfig', ZoneConfigSchema);

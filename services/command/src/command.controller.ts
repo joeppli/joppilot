@@ -5,6 +5,7 @@ import { PrismaService } from './prisma.service';
 import { ZoneService } from './zone.service';
 import { AssignmentService } from './assignment.service';
 import { Roles, RolesGuard } from './roles.guard';
+import { SigningService } from './signing.service';
 import { requireOperatorIdentity, actorFrom } from './identity';
 import {
   CommandEnvelope,
@@ -29,6 +30,7 @@ export class CommandController {
     private readonly sessionService: SessionService,
     private readonly zoneService: ZoneService,
     private readonly assignments: AssignmentService,
+    private readonly signing: SigningService,
     private readonly prisma: PrismaService
   ) {}
 
@@ -251,13 +253,12 @@ export class CommandController {
    * authorization comes from the permit (id + validity window), never from a
    * role flipping a rule at runtime. Admin-only (RolesGuard).
    *
-   * DEV-14 (accepted deviation): reclassifying to OTHER Mode 2 zone types
-   * (depot/private/permitted_test) currently needs no permit artifact — an
-   * admin could mislabel a public location. The edge stays on its own zone
-   * config (fail-safe, DEV-8), so this cannot reach the vehicle today; it
-   * must be closed in M2-5 when zone config starts flowing to the vehicle:
-   * zone changes then only come from canton-approved zone definitions, not
-   * this free-form endpoint. Tracked in the architecture register.
+   * DEV-14 (tightened in M2-5, still open): every Mode-2-capable zone type
+   * now requires an authorization artifact + validity window (enforced
+   * below), and the change reaches the vehicle as a signed config (DEV-8
+   * closed). What remains open is validation against a canton-approved
+   * zone-definition CATALOG (geometry + conditions) — the M3-5 zone work.
+   * Tracked in the architecture register.
    */
   @Roles('admin')
   @Post(':vehicleId/zone')
@@ -280,31 +281,42 @@ export class CommandController {
 
     const from = this.zoneService.getZone(vehicleId);
 
-    // ICD §1: Mode 2 on a public route is permit-based AND time-limited —
-    // without a validity window the zone would never fall back to the safe
-    // default, i.e. Mode 2 open indefinitely on a public road.
-    if (zone === 'public_test_permit') {
+    // ICD §1: opening Mode 2 is authorization-based AND time-limited. Since
+    // M2-5 the config actually REACHES the vehicle (DEV-8 closed), so a
+    // free-form "depot" label would open Mode 2 for real — therefore EVERY
+    // Mode-2-capable zone type now requires an authorization artifact
+    // (cantonal test permit for public_test_permit; site authorization id
+    // for depot/private/permitted_test) plus a validity window the EDGE
+    // enforces: past the window the vehicle reverts to the safe default on
+    // its own. Tightens DEV-14; the full canton-approved zone-definition
+    // catalog (geometry-validated) remains open with the M3-5 zone work.
+    const MODE2_CAPABLE: ZoneType[] = ['public_test_permit', 'depot', 'private', 'permitted_test'];
+    if (MODE2_CAPABLE.includes(parsed.data)) {
       if (!permitId || typeof validUntil !== 'number') {
         await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'REJECTED', { reason: 'PERMIT_REQUIRED', from, to: zone, permitId, validUntil });
         throw new ForbiddenException({
           reason: 'PERMIT_REQUIRED',
-          details: 'Opening Mode 2 on a public route requires a cantonal test permit (permitId + validUntil).',
+          details: `Zone '${zone}' permits Mode 2 — an authorization artifact (permitId) and a validity window (validUntil) are required (ICD §1).`,
         });
       }
       if (validUntil <= Date.now()) {
         await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'REJECTED', { reason: 'PERMIT_EXPIRED', from, to: zone, permitId, validUntil });
         throw new ForbiddenException({
           reason: 'PERMIT_EXPIRED',
-          details: `Permit validity window ends in the past (validUntil=${validUntil}).`,
+          details: `Authorization validity window ends in the past (validUntil=${validUntil}).`,
         });
       }
     }
 
     const permit = permitId ? { permitId, changedBy: issuer, reason, validUntil } : undefined;
-    this.zoneService.setZone(vehicleId, parsed.data, permit);
-    await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'ACK', { from, to: zone, permitId, reason, validUntil });
-    this.logger.log(`Zone change for ${vehicleId}: ${from} → ${zone} by ${issuer}${permitId ? ` (permit ${permitId})` : ''}`);
-    return { status: 'success', vehicleId, zone, from, permitId };
+    // M2-5 (DEV-8 closed): the change is DELIVERED to the vehicle as a signed,
+    // revision-monotonic config document. Delivery status is part of the
+    // audit record — an undelivered change is only cloud-side state and the
+    // vehicle stays on its stricter current zone (fail-safe).
+    const delivery = this.zoneService.setZone(vehicleId, parsed.data, permit);
+    await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'ACK', { from, to: zone, permitId, reason, validUntil, ...delivery });
+    this.logger.log(`Zone change for ${vehicleId}: ${from} → ${zone} by ${issuer}${permitId ? ` (permit ${permitId})` : ''} (delivered=${delivery.delivered})`);
+    return { status: 'success', vehicleId, zone, from, permitId, ...delivery };
   }
 
   // ----------------------------------------------------------------
@@ -320,7 +332,9 @@ export class CommandController {
   ) {
     const commandId = uuidv4();
     const issuedAt = await this.sessionService.getTokenIssuedAt(vehicleId);
-    const envelope: CommandEnvelope = {
+    // ICD §4 (M2-5): every envelope is SIGNED — the vehicle NACKs anything
+    // unsigned or altered in flight.
+    const envelope: CommandEnvelope = this.signing.signDocument({
       commandId,
       correlationId: uuidv4(),
       sessionId: token,
@@ -331,7 +345,7 @@ export class CommandController {
       timestamp: Date.now(),
       ttlMs: payload.action === 'E_STOP' ? 5000 : 2000,
       payload,
-    };
+    });
 
     // Validate our own envelope against the contract before it leaves the cloud.
     const check = CommandEnvelopeSchema.safeParse(envelope);

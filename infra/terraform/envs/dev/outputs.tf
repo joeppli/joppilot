@@ -122,3 +122,8 @@ output "valkey_endpoint" {
   description = "Valkey (fencing-lock cache) endpoint host — TLS-only; only the command task SG can reach it."
   value       = module.valkey.endpoint_host
 }
+
+output "command_signing_public_key_pem" {
+  description = "Ed25519 PUBLIC key matching the command-signing secret (M2-5, ICD §4) — the vehicle pins this; distributed with IoT provisioning (M2-5b)."
+  value       = tls_private_key.command_signing.public_key_pem
+}

@@ -195,13 +195,67 @@ export const CommandEnvelopeSchema = z.object({
   timestamp: z.number().int().positive(), // UTC epoch ms
   ttlMs: z.number().int().positive(),
   payload: CommandPayloadSchema,
-  // TODO(M2-5): make REQUIRED and enforced. ICD §4 mandates a signature on every
-  // command; it stays optional ONLY because the local prototype has no key
-  // infrastructure yet. When the command channel moves to IoT Core (X.509 mTLS,
-  // M2-5), Gate 1 signs, the edge verifies against the pinned cloud key and
-  // NACKs unsigned/invalid envelopes (SCHEMA_INVALID). Do NOT fake-fill this
-  // field before then — a placeholder signature is worse evidence than none.
-  signature: z.string().optional(),
+  // REQUIRED since M2-5 (ICD §4). Ed25519 over the CANONICAL JSON of the
+  // envelope WITHOUT this field (see canonicalStringify): Gate 1 signs with
+  // the cloud private key, the vehicle verifies against its pinned public
+  // key and NACKs unsigned/invalid envelopes (SCHEMA_INVALID). The vehicle
+  // holds only the PUBLIC key — no signing secret ever rides on the vehicle
+  // (SEC-08 spirit). base64, 64-byte Ed25519 signature.
+  signature: z.string().min(1),
+});
+
+/**
+ * Canonical JSON for signing (M2-5): object keys sorted recursively, no
+ * whitespace. Both signer (cloud, this function) and verifier (Rust edge,
+ * serde_json::Value with its default sorted BTreeMap) re-serialize the SAME
+ * parsed value, so key order and number formatting agree as long as payloads
+ * stay within plain JSON (shortest-roundtrip numbers, no exotic strings) —
+ * which the Zod schemas above already guarantee.
+ */
+export function canonicalStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalStringify).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalStringify(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+// ------------------------------------------------------------------
+// ZONE CONFIGURATION DELIVERY (ICD §1, M2-5 — closes DEV-8)
+// The cloud distributes the vehicle's zone type (and, for a public test
+// permit, the permit context) TO the vehicle: retained MQTT topic locally,
+// the `zone-config` named Device Shadow on AWS IoT. The document is SIGNED
+// with the same cloud key as commands — zone config decides whether Mode 2
+// is possible, so it gets the same integrity protection; `revision` is
+// monotonic per vehicle so a replayed older config can never downgrade the
+// vehicle to a more permissive zone. The edge stays fail-safe: an absent,
+// unverifiable or stale document leaves it on its stricter local default.
+// ------------------------------------------------------------------
+export const ZonePermitConfigSchema = z.object({
+  permitId: z.string().min(1),
+  // Validity window end (epoch ms). The edge reverts to the safe default the
+  // moment it lapses — enforced on the vehicle, independent of the cloud.
+  validUntil: z.number().int().positive(),
+  // validFrom + speedLimitKmh are DELIVERED now but ENFORCED on the edge in
+  // M3-5 (per the timeline); carrying them from day one avoids a schema bump.
+  validFrom: z.number().int().positive().optional(),
+  speedLimitKmh: z.number().positive().optional(),
+});
+
+export const ZoneConfigSchema = z.object({
+  vehicleId: z.string().min(1),
+  zone: ZoneTypeSchema,
+  permit: ZonePermitConfigSchema.optional(),
+  issuedAt: z.number().int().positive(), // epoch ms
+  revision: z.number().int().positive(), // monotonic per vehicle (anti-replay)
+  issuer: z.string().min(1),
+  // Ed25519 over canonicalStringify(config without `signature`), base64.
+  signature: z.string().min(1),
 });
 
 // ------------------------------------------------------------------
@@ -414,3 +468,5 @@ export type CheckItemStatus = z.infer<typeof CheckItemStatusSchema>;
 export type PreDepartureCheck = z.infer<typeof PreDepartureCheckSchema>;
 export type MissionStatus = z.infer<typeof MissionStatusSchema>;
 export type Mission = z.infer<typeof MissionSchema>;
+export type ZonePermitConfig = z.infer<typeof ZonePermitConfigSchema>;
+export type ZoneConfig = z.infer<typeof ZoneConfigSchema>;

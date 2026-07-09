@@ -3,7 +3,9 @@ import {
   CommandEnvelopeSchema,
   TelemetryPayloadSchema,
   HeartbeatSchema,
+  ZoneConfigSchema,
   isModeAllowedInZone,
+  canonicalStringify,
 } from '../src/index';
 
 describe('Zone ↔ Mode matrix (ICD §1)', () => {
@@ -58,11 +60,37 @@ describe('Zod Contract Validations', () => {
       payload: {
         action: 'E_STOP',
         reason: 'Obstacle detected'
-      }
+      },
+      // REQUIRED since M2-5 (ICD §4): Ed25519 over the canonical JSON.
+      signature: 'c2lnbmF0dXJl',
     };
 
     const result = CommandEnvelopeSchema.safeParse(validCommand);
     expect(result.success).toBe(true);
+
+    // ...and the SAME envelope without a signature must be refused (M2-5).
+    const { signature, ...unsigned } = validCommand;
+    expect(CommandEnvelopeSchema.safeParse(unsigned).success).toBe(false);
+  });
+
+  it('canonicalStringify sorts keys recursively and drops undefined (signing base)', () => {
+    const a = canonicalStringify({ b: 1, a: { d: [1, 2], c: 'x' }, skip: undefined });
+    expect(a).toBe('{"a":{"c":"x","d":[1,2]},"b":1}');
+  });
+
+  it('validates a zone-config document and requires its signature (M2-5, DEV-8)', () => {
+    const cfg = {
+      vehicleId: 'VEH-001',
+      zone: 'public_test_permit',
+      permit: { permitId: 'GL-2026-042', validUntil: Date.now() + 3600_000 },
+      issuedAt: Date.now(),
+      revision: Date.now(),
+      issuer: 'ADMIN',
+      signature: 'c2lnbmF0dXJl',
+    };
+    expect(ZoneConfigSchema.safeParse(cfg).success).toBe(true);
+    const { signature, ...unsigned } = cfg;
+    expect(ZoneConfigSchema.safeParse(unsigned).success).toBe(false);
   });
 
   it('should reject a command with missing TTL', () => {

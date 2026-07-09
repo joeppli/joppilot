@@ -165,10 +165,13 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
    * reporting success (audit-7 finding 4) — a dropped command that looks sent
    * is worse than a loud failure.
    */
-  publish(topic: string, payload: any): boolean {
+  publish(topic: string, payload: any, opts: { retain?: boolean } = {}): boolean {
     if (this.client?.connected) {
-      this.client.publish(topic, JSON.stringify(payload), { qos: 1 });
-      this.logger.log(`Published to ${topic}: ${JSON.stringify(payload)}`);
+      // retain: zone-config uses a retained message locally so the vehicle
+      // receives the current config on (re)connect, mirroring what the
+      // Device Shadow provides on AWS IoT (M2-5).
+      this.client.publish(topic, JSON.stringify(payload), { qos: 1, retain: opts.retain === true });
+      this.logger.log(`Published to ${topic}${opts.retain ? ' (retained)' : ''}: ${JSON.stringify(payload)}`);
       return true;
     }
     this.logger.error(`MQTT client not connected. DROPPED publish to ${topic}.`);

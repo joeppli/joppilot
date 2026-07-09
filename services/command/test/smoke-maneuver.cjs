@@ -84,12 +84,14 @@ client.on('connect', () => {
     }, 1000);
 
     // Clear any existing safe-stop latch from prior tests
-    // (correlationId is REQUIRED since M2-4 — the edge NACKs without it)
-    const clearEnv = {
+    // (correlationId REQUIRED since M2-4; SIGNED since M2-5 — the edge NACKs
+    // unsigned envelopes, ICD §4)
+    const { signDoc } = require('./sign-helper.cjs');
+    const clearEnv = signDoc({
       commandId: uuid(), correlationId: uuid(), sessionId: 'sess-smoke', vehicleId: V, issuer: 'OP-SMOKE',
       mode: 'MODE1', token: { tokenId: uuid(), issuedAt: Date.now() },
       timestamp: Date.now(), ttlMs: 5000, payload: { action: 'CLEAR_SAFE_STOP' },
-    };
+    });
     client.publish(TOPICS.cmd, JSON.stringify(clearEnv));
     await new Promise(r => setTimeout(r, 1000));
 
