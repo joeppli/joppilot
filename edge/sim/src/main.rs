@@ -174,7 +174,6 @@ struct CommandEnvelope {
     #[allow(dead_code)]
     session_id: String,
     #[serde(rename = "vehicleId")]
-    #[allow(dead_code)]
     vehicle_id: String,
     #[allow(dead_code)]
     issuer: String,
@@ -685,6 +684,19 @@ async fn main() {
             // finalize inline: compute the ack, store it, publish it.
             let now = now_ms();
 
+            // 2b) Target vehicle (UNAUTHORIZED, ICD §4) --------------------
+            // The envelope names its target; the authoritative gate refuses a
+            // command addressed to another vehicle no matter what topic it
+            // arrived on — Gate 2 exists precisely because cloud routing can
+            // be wrong or spoofed (audit-7 finding 5).
+            if envelope.vehicle_id != vehicle_id {
+                println!("⛔ COMMAND REJECTED! Target '{}' is not this vehicle '{}'. ID: {}", envelope.vehicle_id, vehicle_id, cid);
+                let ack = ack_json(&cid, "REJECTED", Some("UNAUTHORIZED"));
+                remember_ack(&seen_commands, &cid, &ack);
+                client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                continue;
+            }
+
             // 3) TTL (TTL_EXPIRED, ICD §4) ---------------------------------
             if now > envelope.timestamp + envelope.ttl_ms {
                 println!("⛔ COMMAND REJECTED! TTL expired. ID: {}", cid);
@@ -817,7 +829,14 @@ async fn main() {
                     .and_then(|v| v.as_str()).map(|s| s.to_string());
 
                 let mut prop = active_proposal.lock().unwrap();
-                let matched = prop.as_ref().map(|ap| ap.proposal_id == decision_proposal_id).unwrap_or(false);
+                // ICD §6: past the decision window the vehicle does NOT wait —
+                // the safe default applies. The generator loop expires lazily
+                // (2 s tick), so check the deadline HERE too: a decision that
+                // arrives after the window must not beat the safe default
+                // (audit-7 finding 7).
+                let matched = prop.as_ref()
+                    .map(|ap| ap.proposal_id == decision_proposal_id && now_ms() < ap.deadline_ms)
+                    .unwrap_or(false);
 
                 if !matched {
                     drop(prop);

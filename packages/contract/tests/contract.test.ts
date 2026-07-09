@@ -43,6 +43,8 @@ describe('Zod Contract Validations', () => {
   it('should validate a correct E-STOP command envelope', () => {
     const validCommand = {
       commandId: '123e4567-e89b-12d3-a456-426614174000',
+      // REQUIRED since M2-4-4 (SEC-06): the EDR chain correlates by this id.
+      correlationId: '123e4567-e89b-12d3-a456-426614174002',
       sessionId: 'sess-123',
       vehicleId: 'VEH-001',
       issuer: 'OP-01',

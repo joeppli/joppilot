@@ -132,6 +132,10 @@ module "valkey" {
 
   allowed_security_group_ids = {
     command = module.service_command.task_security_group_id
+    # audit-7: fleet READS the fencing lock to gate its operator workflows
+    # (pre-departure confirm, mission lifecycle — SEC-05); the lock lifecycle
+    # stays owned by the command service.
+    fleet = module.service_fleet.task_security_group_id
   }
 }
 
@@ -226,7 +230,14 @@ module "service_fleet" {
   path_patterns          = ["/api/fleet/*"]
   desired_count          = var.service_desired_count
 
-  environment = merge(local.db_env, { DB_SCHEMA = "fleet" })
+  environment = merge(local.db_env, {
+    DB_SCHEMA = "fleet"
+    # audit-7: the fleet workflows are fencing-token-gated (SEC-05) — fleet
+    # reads the lock the command service owns in Valkey.
+    REDIS_HOST = module.valkey.endpoint_host
+    REDIS_PORT = tostring(module.valkey.endpoint_port)
+    REDIS_TLS  = "true"
+  })
   secrets     = local.db_secrets
   secret_arns = [module.rds.master_user_secret_arn]
 }

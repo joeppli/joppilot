@@ -39,18 +39,21 @@ export function Dashboard() {
           <CardHeader title="Mission" action={mission ? <Badge tone={missionTone(mission.status)}>{mission.status}</Badge> : undefined} />
           <div className="card-pad">
             {!mission ? (
-              <Button variant="success" onClick={createMission}>New mission</Button>
+              <>
+                <Button variant="success" disabled={!hasControl} onClick={createMission}>New mission</Button>
+                {!hasControl && <div className="text-xs muted" style={{ marginTop: 6 }}>Take control of the vehicle first (Operations page)</div>}
+              </>
             ) : (
               <>
                 <div className="kv"><span>ID</span><strong className="mono-id">{mission.missionId.slice(0, 8)}</strong></div>
                 <div className="row gap-2 wrap" style={{ marginTop: 10 }}>
                   {mission.status === 'ACTIVE' && <>
-                    <Button size="sm" variant="warning" onClick={() => missionAction('pause')}>Pause</Button>
-                    <Button size="sm" onClick={() => missionAction('complete')}>Complete</Button>
+                    <Button size="sm" variant="warning" disabled={!hasControl} onClick={() => missionAction('pause')}>Pause</Button>
+                    <Button size="sm" disabled={!hasControl} onClick={() => missionAction('complete')}>Complete</Button>
                   </>}
-                  {mission.status === 'PAUSED' && <Button size="sm" variant="success" onClick={() => missionAction('resume')}>Resume</Button>}
+                  {mission.status === 'PAUSED' && <Button size="sm" variant="success" disabled={!hasControl} onClick={() => missionAction('resume')}>Resume</Button>}
                   {['PENDING', 'PRE_CHECK', 'ACTIVE', 'PAUSED'].includes(mission.status) &&
-                    <Button size="sm" variant="danger" onClick={() => missionAction('abort')}>Abort</Button>}
+                    <Button size="sm" variant="danger" disabled={!hasControl} onClick={() => missionAction('abort')}>Abort</Button>}
                   {['COMPLETED', 'ABORTED'].includes(mission.status) &&
                     <Button size="sm" variant="ghost" onClick={dismissMission}>Dismiss</Button>}
                 </div>
@@ -74,15 +77,15 @@ export function Dashboard() {
                 <span className="text-xs muted">{item.source}</span>
                 {item.status === 'PENDING' && (
                   <div className="row gap-1">
-                    <Button size="sm" variant="success" onClick={() => setCheckItem(item.itemId, 'PASS')}>Pass</Button>
-                    <Button size="sm" variant="danger" onClick={() => setCheckItem(item.itemId, 'FAIL')}>Fail</Button>
+                    <Button size="sm" variant="success" disabled={!hasControl} onClick={() => setCheckItem(item.itemId, 'PASS')}>Pass</Button>
+                    <Button size="sm" variant="danger" disabled={!hasControl} onClick={() => setCheckItem(item.itemId, 'FAIL')}>Fail</Button>
                   </div>
                 )}
               </div>
             ))}
             <div className="row between" style={{ marginTop: 14 }}>
               <span className="text-xs muted">* Safety-critical — must pass to confirm</span>
-              {allChecked && !criticalFail && <Button onClick={confirmAndStart}>Confirm &amp; start mission</Button>}
+              {allChecked && !criticalFail && <Button disabled={!hasControl} onClick={confirmAndStart}>Confirm &amp; start mission</Button>}
               {criticalFail && <span className="text-sm" style={{ color: 'var(--color-danger)', fontWeight: 700 }}>Safety-critical item failed — cannot proceed</span>}
             </div>
           </div>

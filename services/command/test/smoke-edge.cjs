@@ -61,6 +61,12 @@ client.on('connect', async () => {
   const d = base({ timestamp: Date.now() - 10000, ttlMs: 2000 });
   pub(T.cmd, d); check('ttl-expired', await waitAck(d.commandId), 'REJECTED', 'TTL_EXPIRED');
 
+  // ICD §4: the envelope names its TARGET vehicle. Gate 2 refuses a command
+  // addressed to another vehicle regardless of the topic it arrived on —
+  // cloud routing can be wrong or spoofed (audit-7 finding 5).
+  const w = base({ vehicleId: 'VEH-999' });
+  pub(T.cmd, w); check('wrong-target-vehicle', await waitAck(w.commandId), 'REJECTED', 'UNAUTHORIZED');
+
   const b = base({ mode: 'MODE2', payload: { action: 'STEER', angle: -1.5 }, token: { tokenId: uuid(), issuedAt: Date.now() - 1 } });
   pub(T.cmd, b); check('mode2-on-public', await waitAck(b.commandId), 'REJECTED', 'MODE_MISMATCH');
 

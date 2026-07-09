@@ -48,12 +48,33 @@ const admin = { 'x-operator-role': 'admin' };
 
   // 4. Assigned operator takes control.
   const tc = await req('POST', `/api/command/${V}/take-control`, { operatorId: OP });
-  const token = tc.b?.token;
+  let token = tc.b?.token;
   check('assigned-take-control-ok', tc.s === 201 && !!token);
 
   // 5. Command with the live token reaches Gate 1 (published to MQTT).
   const cmd = await req('POST', `/api/command/${V}/command`, { operatorId: OP, token, payload: { action: 'START_MISSION' } });
   check('command-with-token-pending', cmd.s === 201 && cmd.b?.status === 'pending', JSON.stringify(cmd.b));
+
+  // 5b. SEC-04 (audit-7 finding 2): handover passes the SAME assignment gate
+  // as take-control — an admin cannot hand the vehicle to an operator who was
+  // never assigned to it.
+  const strangerHandover = await req('POST', `/api/command/${V}/handover`, { operatorId: `${OP}-stranger` }, admin);
+  check('handover-unassigned-403', strangerHandover.s === 403 && strangerHandover.b?.reason === 'NO_ASSIGNMENT', JSON.stringify(strangerHandover.b));
+
+  // 5c. Handover to an ASSIGNED operator elevates the token (ICD §8): the new
+  // token works, the old operator's token is dead.
+  const OP2 = `${OP}-second`;
+  await req('POST', `/api/command/${V}/assign`, { operatorId: OP2, assignedBy: 'ADMIN-SMOKE' }, admin);
+  const ho = await req('POST', `/api/command/${V}/handover`, { operatorId: OP2 }, admin);
+  check('handover-assigned-ok', (ho.s === 200 || ho.s === 201) && !!ho.b?.token, JSON.stringify(ho.b));
+  const oldTokenCmd = await req('POST', `/api/command/${V}/command`, { operatorId: OP, token, payload: { action: 'START_MISSION' } });
+  check('handover-elevates-token', oldTokenCmd.s === 401);
+  // Hand control back to OP so the revocation-severing chain below still
+  // exercises the take-control token (cleanup: drop OP2's assignment).
+  const back = await req('POST', `/api/command/${V}/handover`, { operatorId: OP }, admin);
+  check('handover-back-ok', (back.s === 200 || back.s === 201) && !!back.b?.token);
+  token = back.b.token;
+  await req('POST', `/api/command/${V}/unassign`, { operatorId: OP2, revokedBy: 'ADMIN-SMOKE' }, admin);
 
   // 6. SEC-09: admin revokes → the active session is severed immediately.
   const rev = await req('POST', `/api/command/${V}/unassign`, { operatorId: OP, revokedBy: 'ADMIN-SMOKE' }, admin);

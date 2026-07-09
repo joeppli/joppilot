@@ -12,6 +12,28 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// APPEND-ONLY audit records for the fleet workflows (ICD §7 step 4, LEG-03/04).
+// Same shape and discipline as command's EventDataRecord: a transition is a
+// NEW row, never an update — checklist creation, every operator item
+// verification, the confirmation (ACK and REJECTED attempts) and every mission
+// transition land here, correlated by checklistId/missionId. DEV-17: lives in
+// the fleet schema until the August WORM/EDR consolidation (S3 Object Lock)
+// merges the evidence copies; SEC-06 correlation across the two tables works
+// via correlationId.
+model FleetEventRecord {
+  id            String   @id @default(uuid())
+  correlationId String
+  vehicleId     String
+  issuer        String
+  action        String
+  status        String   // e.g. "ACK", "REJECTED"
+  details       Json?
+  createdAt     DateTime @default(now())
+
+  @@index([correlationId])
+  @@index([vehicleId])
+}
+
 model PreDepartureCheck {
   id          String   @id @default(uuid())
   vehicleId   String

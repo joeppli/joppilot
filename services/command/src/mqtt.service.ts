@@ -159,13 +159,20 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     this.logger.warn(`SAFE_STOP_LATCH ${latched ? 'ENGAGED' : 'RELEASED'} recorded for ${hb.vehicleId} (RES-04)`);
   }
 
-  publish(topic: string, payload: any) {
+  /**
+   * Returns whether the payload was handed to a CONNECTED client. Callers on
+   * the command/E-STOP path must surface `false` to the operator instead of
+   * reporting success (audit-7 finding 4) — a dropped command that looks sent
+   * is worse than a loud failure.
+   */
+  publish(topic: string, payload: any): boolean {
     if (this.client?.connected) {
       this.client.publish(topic, JSON.stringify(payload), { qos: 1 });
       this.logger.log(`Published to ${topic}: ${JSON.stringify(payload)}`);
-    } else {
-      this.logger.error('MQTT client not connected. Cannot publish.');
+      return true;
     }
+    this.logger.error(`MQTT client not connected. DROPPED publish to ${topic}.`);
+    return false;
   }
 }
 
