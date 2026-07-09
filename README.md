@@ -175,6 +175,7 @@ infra/terraform/
   modules/apigw/     # HTTP API + Cognito JWT authorizer + VPC Link
   modules/endpoints/ # interface VPC endpoints (ECR/logs/Secrets Manager) + S3 gateway
   modules/rds/       # RDS PostgreSQL (STATEFUL — never in the destroy button; interim for AD-14)
+  modules/iot/       # M2-5b: IoT Core things + topic-scoped policies + X.509 certs (no standing cost, not in the destroy button)
   bootstrap/         # one-time: S3 state bucket, DynamoDB lock, OIDC CI role
 ```
 
@@ -194,7 +195,8 @@ infra/terraform/
 | M2-4-3 | Real services (command/telemetry/fleet) on ECS Fargate: path-routed behind the internal ALB (`/api/command|maneuver` → 4000, `/api/fleet` → 4002, `/api/telemetry` → 4001), DB creds injected from the RDS-managed secret, **Serverless Valkey** (fencing lock, TLS-only) + RBAC from the API-GW-verified `cognito:groups` claim (closes DEV-7; trust note = DEV-15) + DB/Valkey SG ingress restricted to task SGs (closes DEV-6). **MQTT stays disabled until M2-5** (no broker in the cloud yet) — command/fleet REST is live, telemetry is deployed dormant | ✅ |
 | M2-4-4 | Rest of the M2-4 scope: operator↔vehicle **assignment model** + take-control gate (SEC-04, `ASSIGNMENT_ENFORCEMENT=true` on the command task), revocation → immediate session severing (SEC-09), **mandatory `correlationId`** end-to-end (SEC-06: envelope schema + EDR column + edge NACK; maneuver chain correlates by `proposalId`) | ✅ |
 | M2-5a | Command signing (Ed25519, ICD §4) enforced on the vehicle + **zone/permit config delivery to the edge** (signed, revision-monotonic; DEV-8 closed) — local MQTT path | ✅ |
-| M2-5b | IoT Core (MQTT backbone, mTLS/X.509 provisioning, `zone-config` Device Shadow) — **gated on the DEV-12 free-plan probe** | ⏳ |
+| M2-5b-1 | IoT Core **infrastructure**: thing type + `VEH-001` thing, topic-scoped vehicle/service IoT policies, X.509 cert provisioning (vehicle + service bundles → Secrets Manager), ATS endpoint. Services stay `MQTT_ENABLED=false` (no behaviour change, ~zero idle cost, not in the destroy button). DEV-12 probe passed 2026-07-09 | ✅ authored |
+| M2-5b-2 | Flip `MQTT_ENABLED=true`: mount the service cert bundle into the ECS tasks, connect command/telemetry to IoT Core over mTLS, `zone-config` Device Shadow live | ⏳ |
 | later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
 
 ### Ingress path (current)
@@ -254,6 +256,30 @@ curl -X POST -H "Authorization: Bearer <ID_TOKEN>" -H 'Content-Type: application
 # The internal ALB does NOT answer from the internet — a timeout here is correct
 # behaviour (proof that API Gateway is the only entry), not an error:
 curl -m 10 http://<alb_dns_name>/          # → timeout
+```
+
+**Verify the IoT Core backbone (M2-5b-1)** — the services don't use it yet
+(`MQTT_ENABLED=false`), so prove the broker + provisioning in CloudShell:
+
+```bash
+# Thing + attached cert + policy exist:
+aws iot describe-thing --thing-name VEH-001 --region eu-central-1
+aws iot list-thing-principals --thing-name VEH-001 --region eu-central-1
+# The endpoint the tf output reports (AWS_IOT_ENDPOINT once MQTT is flipped on):
+aws iot describe-endpoint --endpoint-type iot:Data-ATS --region eu-central-1
+
+# End-to-end pub/sub with the provisioned VEHICLE cert (proves the topic policy):
+SEC=$(aws secretsmanager get-secret-value --secret-id joppilot-dev-iot-vehicle-VEH-001 \
+  --query SecretString --output text --region eu-central-1)
+echo "$SEC" | jq -r .certificatePem > /tmp/c.pem
+echo "$SEC" | jq -r .privateKey     > /tmp/k.pem
+echo "$SEC" | jq -r .rootCa         > /tmp/ca.pem
+EP=$(echo "$SEC" | jq -r .iotEndpoint)
+# Subscribe on an allowed vehicle topic (client id MUST equal the thing name):
+mosquitto_sub -h "$EP" -p 8883 --cafile /tmp/ca.pem --cert /tmp/c.pem --key /tmp/k.pem \
+  -i VEH-001 -t 'joppilot/v1/vehicles/VEH-001/command' -d
+# In another CloudShell tab, publish to it and watch it arrive; publishing to a
+# DIFFERENT vehicle's topic is denied by the per-thing policy.
 ```
 
 A valid Cognito **bearer token** on the API Gateway call reaches the services (needs

@@ -127,3 +127,13 @@ output "command_signing_public_key_pem" {
   description = "Ed25519 PUBLIC key matching the command-signing secret (M2-5, ICD §4) — the vehicle pins this; distributed with IoT provisioning (M2-5b)."
   value       = tls_private_key.command_signing.public_key_pem
 }
+
+output "iot_endpoint" {
+  description = "IoT Core ATS data endpoint (M2-5b) — AWS_IOT_ENDPOINT for the services/edge when MQTT is flipped on."
+  value       = module.iot.iot_endpoint
+}
+
+output "iot_service_cert_secret_arn" {
+  description = "Secrets Manager ARN of the cloud services' IoT cert bundle (mounted into ECS in a later slice)."
+  value       = module.iot.service_cert_secret_arn
+}
