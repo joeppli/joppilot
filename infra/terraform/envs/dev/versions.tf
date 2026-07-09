@@ -13,5 +13,10 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
+    # M2-5b: the iot module fetches Amazon's public Root CA for cert bundles.
+    http = {
+      source  = "hashicorp/http"
+      version = "~> 3.4"
+    }
   }
 }

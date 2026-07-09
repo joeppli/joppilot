@@ -267,6 +267,19 @@ module "service_fleet" {
   secret_arns = [module.rds.master_user_secret_arn]
 }
 
+# --- M2-5b: IoT Core backbone (AD-11) — infrastructure slice ------------------
+# Things + topic-scoped policies + X.509 provisioning + the ATS endpoint.
+# INFRASTRUCTURE ONLY: the services stay MQTT_ENABLED=false (above) — a later
+# slice mounts module.iot.service_cert_secret_arn into the tasks and flips them
+# over. NO standing cost (per-message/connection billing) → deliberately NOT in
+# the destroy-billables button (nothing to tear down when idle). DEV-12 probe
+# confirmed IoT Core is available on the free account plan (2026-07-09).
+module "iot" {
+  source      = "../../modules/iot"
+  name_prefix = "joppilot-${var.environment}"
+  vehicle_ids = ["VEH-001"] # dev sim; grows toward the OPS-01 ~10-vehicle fleet
+}
+
 # --- M2-3a: Cognito identity + MFA + RBAC groups (free tier, no standing cost) ---
 # The API Gateway Cognito authorizer + internal ALB spine follow in later M2-3 PRs.
 module "cognito" {
