@@ -301,6 +301,51 @@ aws iot-data get-thing-shadow --thing-name VEH-001 --shadow-name zone-config \
 # → the signed ZoneConfig document the edge will verify + apply on connect.
 ```
 
+**Connect the sim edge to cloud IoT Core — full A-boundary end-to-end (M2-5, slice C).**
+The Rust sim can run against the cloud broker instead of local mosquitto. Fetch
+the provisioned material in **CloudShell**, then run the edge on a machine with
+Rust (copy the four cert files + the two values over):
+
+```bash
+# 1. Vehicle cert bundle (provisioned in M2-5b-1) → files:
+SEC=$(aws secretsmanager get-secret-value --secret-id joppilot-dev-iot-vehicle-VEH-001 \
+  --query SecretString --output text --region eu-central-1)
+echo "$SEC" | jq -r .certificatePem > veh.cert.pem
+echo "$SEC" | jq -r .privateKey     > veh.key.pem
+echo "$SEC" | jq -r .rootCa         > veh.ca.pem
+echo "$SEC" | jq -r .iotEndpoint                       # → AWS_IOT_ENDPOINT
+
+# 2. The cloud's signing PUBLIC key as the raw base64 the edge pins — derived
+#    from the signing private key (only the vehicle ever sees the public half):
+aws secretsmanager get-secret-value --secret-id joppilot-dev-command-signing-key \
+  --query SecretString --output text --region eu-central-1 \
+  | openssl pkey -pubout -outform DER | tail -c 32 | base64   # → EDGE_CLOUD_PUBKEY
+```
+
+```bash
+# 3. Run the sim against cloud IoT Core. The client id MUST be the thing name
+#    (VEH-001) — the vehicle IoT policy scopes topics to it (SEC-04).
+cd edge/sim && \
+AWS_IOT_ENDPOINT=<iotEndpoint> \
+AWS_CERT_ROOT_CA_PATH=veh.ca.pem \
+AWS_CERT_CERT_PATH=veh.cert.pem \
+AWS_CERT_PRIVATE_KEY_PATH=veh.key.pem \
+EDGE_CLOUD_PUBKEY=<rawPubkeyB64> \
+EDGE_ZONE_TYPE=public_approved_route \
+cargo run
+# → "Connected to MQTT Broker (AWS IoT Core (client id / thing = VEH-001))"
+#   telemetry + heartbeat flow up; the zone-config shadow is fetched on connect.
+```
+
+Then drive the **whole** cloud→vehicle path from an admin token (as in the
+curl block above): `assign` → `take-control` → `POST /command`. The command is
+signed by Gate 1, crosses IoT Core over mTLS, and the sim's Gate 2 verifies the
+signature + zone matrix and ACKs on `.../command/ack` (watch the edge stdout).
+Keep heartbeats going (loop the `/heartbeat` call) or the edge latches a
+safe-stop after ~3 s of cloud silence — that latch is correct RES-01 behaviour,
+not a failure. A cloud `POST /zone` now reaches the sim via the Device Shadow
+and flips its Mode-2 gate live.
+
 A valid Cognito **bearer token** on the API Gateway call reaches the services (needs
 a user — invite-only). Gotcha: the authorizer's audience is the app client id; if a
 valid token still 401s, send the **ID token** (Cognito access tokens have no `aud`).
