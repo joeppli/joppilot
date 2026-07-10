@@ -17,11 +17,14 @@
 # endpoint needed for that — Secrets Manager decrypts server-side; the caller
 # only ever talks to the secretsmanager API. KMS / STS endpoints remain
 # deferred until something inside the VPC calls them directly.
+# The M2-5 follow-up adds iot.data + a private hosted zone (~$8-9/mo + $0.50/mo):
+# MQTT (8883) and Device-Shadow HTTPS to IoT Core from the private subnets —
+# see the dedicated block below.
 # Note: public ECR (public.ecr.aws) has NO endpoint — hence the image moves to
 # our private ECR repository in this step.
 #
-# COST posture (dev): interface endpoints sit in a SINGLE AZ (~$35/mo total
-# instead of ~$70 for two) — an AZ outage would break image pulls/logs, which is
+# COST posture (dev): interface endpoints sit in a SINGLE AZ (~$44/mo total
+# instead of ~$88 for two) — an AZ outage would break image pulls/logs, which is
 # acceptable in dev; production places one per AZ. The destroy-billables
 # workflow targets this module (independent standing cost).
 
@@ -37,6 +40,14 @@ resource "aws_security_group" "endpoints" {
     description = "HTTPS from the VPC"
     from_port   = 443
     to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  ingress {
+    description = "MQTT/TLS from the VPC to the iot.data endpoint"
+    from_port   = 8883
+    to_port     = 8883
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
   }
@@ -66,6 +77,50 @@ resource "aws_vpc_endpoint" "interface" {
   private_dns_enabled = true
 
   tags = { Name = "${var.name_prefix}-vpce-${each.value}" }
+}
+
+# --- IoT Core data endpoint + private DNS (M2-5 follow-up, 2026-07-10) --------
+# The command/telemetry tasks speak MQTT (8883) to the account's ATS data
+# endpoint, and the command service calls the Device-Shadow HTTPS API on the
+# same hostname. The private subnets have no internet route, so without this
+# endpoint MQTT can never connect after a clean apply (found in the M2 cloud
+# E2E: the tasks sat in a reconnect loop until manually drifted to public
+# subnets). Same single-AZ cost posture as the other interface endpoints.
+#
+# iot.data does NOT support private_dns_enabled for the account-specific ATS
+# hostname, so a private hosted zone (VPC-internal only, does not affect how
+# vehicles resolve the same name from the internet) aliases it to the
+# endpoint's ENIs. Clients keep using the normal hostname — no config change.
+resource "aws_vpc_endpoint" "iot_data" {
+  vpc_id              = var.vpc_id
+  service_name        = "com.amazonaws.${data.aws_region.current.name}.iot.data"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = var.subnet_ids
+  security_group_ids  = [aws_security_group.endpoints.id]
+  private_dns_enabled = false
+
+  tags = { Name = "${var.name_prefix}-vpce-iot-data" }
+}
+
+resource "aws_route53_zone" "iot_data" {
+  name    = var.iot_endpoint_hostname
+  comment = "${var.name_prefix}: maps the IoT ATS hostname onto the iot.data VPC endpoint"
+
+  vpc {
+    vpc_id = var.vpc_id
+  }
+}
+
+resource "aws_route53_record" "iot_data" {
+  zone_id = aws_route53_zone.iot_data.zone_id
+  name    = var.iot_endpoint_hostname
+  type    = "A"
+
+  alias {
+    name                   = aws_vpc_endpoint.iot_data.dns_entry[0].dns_name
+    zone_id                = aws_vpc_endpoint.iot_data.dns_entry[0].hosted_zone_id
+    evaluate_target_health = false
+  }
 }
 
 # --- S3 gateway endpoint (FREE) ------------------------------------------------

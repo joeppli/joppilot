@@ -72,3 +72,25 @@ jobs:
           docker tag "joppilot/${{ matrix.service }}:ci" "$IMAGE:${GITHUB_SHA::7}"
           docker push "$IMAGE:latest"
           docker push "$IMAGE:${GITHUB_SHA::7}"
+
+      # The task definitions reference `:latest`, so pushing a new image does
+      # NOT change the task def and ECS never cycles the tasks on its own — a
+      # running task keeps serving the previous image alongside newer config
+      # (bit us on 2026-07-10: services came up broken after a restore apply).
+      # Skipped silently when the service doesn't exist yet (fresh env, or
+      # after destroy-billables — the next terraform apply starts fresh tasks
+      # that pull the image just pushed).
+      - name: Roll the running service onto the new image (main only)
+        if: ${{ github.event_name != 'pull_request' && vars.AWS_CI_ROLE_ARN != '' }}
+        run: |
+          svc="joppilot-dev-${{ matrix.service }}"
+          status=$(aws ecs describe-services --cluster joppilot-dev-cluster \
+            --services "$svc" --region "$AWS_REGION" \
+            --query 'services[0].status' --output text 2>/dev/null || echo MISSING)
+          if [ "$status" = "ACTIVE" ]; then
+            aws ecs update-service --cluster joppilot-dev-cluster --service "$svc" \
+              --force-new-deployment --region "$AWS_REGION" >/dev/null
+            echo "$svc: rolling onto the image just pushed"
+          else
+            echo "$svc: not ACTIVE ($status) — nothing to roll"
+          fi
