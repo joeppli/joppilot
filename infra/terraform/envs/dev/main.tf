@@ -300,6 +300,18 @@ module "iot" {
   vehicle_ids = ["VEH-001"] # dev sim; grows toward the OPS-01 ~10-vehicle fleet
 }
 
+# --- M3-1: Greengrass V2 core provisioning (AD-11/AD-16) -----------------------
+# Cloud side of the per-vehicle Greengrass core ('<id>-core' thing, TES role
+# alias, artifacts bucket). The core software runs on the edge host — dev:
+# docker on the developer machine next to CARLA (edge/greengrass/README.md).
+# Idle cost ≈ $0 → NOT a destroy-billables target (same rule as module.iot).
+# DEV-12: probe Greengrass on the free plan BEFORE the first apply (M3-1 day 1).
+module "greengrass" {
+  source      = "../../modules/greengrass"
+  name_prefix = "joppilot-${var.environment}"
+  vehicle_ids = ["VEH-001"]
+}
+
 # --- M2-3a: Cognito identity + MFA + RBAC groups (free tier, no standing cost) ---
 # The API Gateway Cognito authorizer + internal ALB spine follow in later M2-3 PRs.
 module "cognito" {

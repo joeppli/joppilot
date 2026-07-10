@@ -1,0 +1,25 @@
+# Greengrass V2 core in docker — dev edge host (runs next to CARLA).
+# Image: AWS ships no maintained prebuilt v2 image — build it once from the
+# official Dockerfile (README.md step 3). Manual provisioning contract per
+# https://docs.aws.amazon.com/greengrass/v2/developerguide/run-greengrass-docker-manual-provisioning.html
+# host networking: the CARLA bridge component must reach CARLA on
+# localhost:2000, and the kernel component keeps its own outbound mTLS MQTT.
+services:
+  greengrass:
+    image: aws-iot-greengrass:2.14.3 # built locally, README step 3
+    container_name: joppilot-greengrass-core
+    init: true # required — propagates the stop signal to the nucleus
+    network_mode: host
+    environment:
+      GGC_ROOT_PATH: /greengrass/v2
+      AWS_REGION: eu-central-1
+      PROVISION: "false"
+      COMPONENT_DEFAULT_USER: ggc_user:ggc_group
+      INIT_CONFIG: /tmp/config/config.yaml
+    volumes:
+      - ./gg-config:/tmp/config:ro # config.yaml (from config.yaml.tpl)
+      - ./gg-certs:/tmp/certs:ro   # cert bundle (README step 2)
+      - gg-root:/greengrass/v2
+
+volumes:
+  gg-root:

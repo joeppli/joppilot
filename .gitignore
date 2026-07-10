@@ -63,6 +63,9 @@ certs/
 *.crt
 *.p12
 *.pfx
+# Greengrass core identity + filled installer config (machine-local)
+edge/greengrass/gg-certs/
+edge/greengrass/gg-config/
 
 # ── Databases ─────────────────────────────────────────────────
 *.sqlite
