@@ -68,6 +68,9 @@ resource "aws_lb_target_group" "this" {
   vpc_id      = var.vpc_id
   target_type = "ip"
 
+  # Drain fast (default 300s) — same rationale as the service module's TG.
+  deregistration_delay = 5
+
   health_check {
     path                = var.health_check_path
     matcher             = "200-399"

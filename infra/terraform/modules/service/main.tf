@@ -99,6 +99,11 @@ resource "aws_lb_target_group" "this" {
   vpc_id      = var.vpc_id
   target_type = "ip"
 
+  # Drain fast (default 300s): short-lived JSON requests, no long connections
+  # to protect — the default adds ~5 min per service to every destroy and to
+  # every deployment's old-task teardown.
+  deregistration_delay = 5
+
   health_check {
     path                = "/healthz"
     matcher             = "200"
