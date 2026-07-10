@@ -22,3 +22,8 @@ variable "route_table_ids" {
   description = "Private route tables that get the S3 gateway-endpoint route (image layers)."
   type        = list(string)
 }
+
+variable "iot_endpoint_hostname" {
+  description = "The account's IoT Core ATS data hostname (module.iot.iot_endpoint). A private hosted zone maps it to the iot.data interface endpoint, because iot.data does not support private DNS for the account-specific hostname."
+  type        = string
+}

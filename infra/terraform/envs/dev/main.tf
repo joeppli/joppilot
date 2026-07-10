@@ -80,6 +80,9 @@ module "endpoints" {
   vpc_cidr        = module.network.vpc_cidr
   subnet_ids      = [module.network.private_subnet_ids[0]] # single AZ — dev cost posture
   route_table_ids = module.network.private_route_table_ids
+  # M2-5 follow-up: iot.data endpoint + private hosted zone so the private-
+  # subnet tasks reach IoT Core (MQTT 8883 / Device Shadow) — no internet route.
+  iot_endpoint_hostname = module.iot.iot_endpoint
 }
 
 # --- M2-2/M2-3c-2: Fargate hello-world — private subnets, image from our ECR ---
