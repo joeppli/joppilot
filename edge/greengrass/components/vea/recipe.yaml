@@ -42,6 +42,7 @@ Manifests:
           export EDGE_ACTUATION_ADDR='{configuration:/actuationAddr}'
           export EDGE_SCHEMA_PATH='{artifacts:path}/CommandEnvelope.json'
           export EDGE_ZONECONFIG_SCHEMA_PATH='{artifacts:path}/ZoneConfig.json'
+          export EDGE_POLICY_PATH='{artifacts:path}/ZoneModePolicy.json'
           export AWS_IOT_ENDPOINT='{configuration:/awsIotEndpoint}'
           export AWS_CERT_ROOT_CA_PATH='{configuration:/certRootCaPath}'
           export AWS_CERT_CERT_PATH='{configuration:/certPath}'
@@ -51,7 +52,10 @@ Manifests:
       - URI: s3://{{ARTIFACTS_BUCKET}}/ch.joppilot.vea/{{COMPONENT_VERSION}}/vea
         Permission:
           Execute: OWNER
-      # The contract schemas ride along as artifacts: the kernel is fail-closed
-      # without them (it validates every command/zone-config against the contract).
+      # The contract schemas + generated zone/mode policy ride along as
+      # artifacts: the kernel is fail-closed without them (it validates every
+      # command/zone-config against the contract and enforces the ICD §1
+      # matrix from the generated policy).
       - URI: s3://{{ARTIFACTS_BUCKET}}/ch.joppilot.vea/{{COMPONENT_VERSION}}/CommandEnvelope.json
       - URI: s3://{{ARTIFACTS_BUCKET}}/ch.joppilot.vea/{{COMPONENT_VERSION}}/ZoneConfig.json
+      - URI: s3://{{ARTIFACTS_BUCKET}}/ch.joppilot.vea/{{COMPONENT_VERSION}}/ZoneModePolicy.json

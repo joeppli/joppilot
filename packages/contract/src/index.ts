@@ -34,13 +34,12 @@ export const VehicleStateSchema = z.enum([
 // `diagRead` : diagnostic read allowed (always true per ICD).
 // `diagActions` : disruptive diagnostic actions (restart) allowed.
 //
-// DUPLICATION WARNING: the edge safety kernel re-implements this matrix AND
-// the action→mode classification in edge/sim/src/main.rs (`mode_allowed_in_zone`
-// / `diag_disruptive_allowed` / `infer_mode`) because Rust cannot import TS.
-// If the ICD §1 matrix or the §4 command catalogue changes, change BOTH and
-// re-run services/command/test/smoke-edge.cjs. Planned fix (M3-1): emit the
-// matrix as generated JSON alongside the other schemas so the edge loads it
-// at startup instead of hardcoding it.
+// SINGLE SOURCE OF TRUTH (M3-1): the build emits this matrix + the action→mode
+// classification as schemas/ZoneModePolicy.json, and the edge safety kernel
+// loads that file at startup (fail-closed) — the two gates can no longer
+// drift. After changing the matrix or the §4 command catalogue: re-run
+// `pnpm --filter @joppilot/contract build`, COMMIT the regenerated
+// schemas/*.json, and re-run services/command/test/smoke-edge.cjs.
 // ------------------------------------------------------------------
 export interface ZonePermissions {
   mode1: boolean;
