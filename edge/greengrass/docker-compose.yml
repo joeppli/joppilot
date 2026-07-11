@@ -6,7 +6,7 @@
 # localhost:2000, and the kernel component keeps its own outbound mTLS MQTT.
 services:
   greengrass:
-    image: aws-iot-greengrass:2.14.3 # built locally, README step 3
+    image: aws-iot-greengrass:latest # built locally, README step 3 — the official Dockerfile downloads the latest nucleus, so the tag says so
     container_name: joppilot-greengrass-core
     init: true # required — propagates the stop signal to the nucleus
     network_mode: host
