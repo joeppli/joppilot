@@ -545,6 +545,8 @@ async fn main() {
     // switches off so kernel state mirrors CARLA ground truth (sticky — two
     // writers on location would fight).
     let external_pose = Arc::new(Mutex::new(false));
+    // When the last pose arrived — feeds the pose-staleness watchdog below.
+    let last_pose_time = Arc::new(Mutex::new(0u64));
 
     // -------------------- Actuation IPC server (M3-1, B-boundary stand-in) --------
     // Verified-commands-out / pose-in channel for the CARLA bridge. Losing the
@@ -559,6 +561,7 @@ async fn main() {
         let loc_for_ipc = location_state.clone();
         let speed_for_ipc = speed_state.clone();
         let ext_for_ipc = external_pose.clone();
+        let pose_time_for_ipc = last_pose_time.clone();
         tokio::spawn(async move {
             let listener = match TcpListener::bind(&addr).await {
                 Ok(l) => {
@@ -605,6 +608,7 @@ async fn main() {
                 let loc = loc_for_ipc.clone();
                 let speed = speed_for_ipc.clone();
                 let ext = ext_for_ipc.clone();
+                let pose_time = pose_time_for_ipc.clone();
                 tokio::spawn(async move {
                     let mut lines = BufReader::new(read_half).lines();
                     while let Ok(Some(line)) = lines.next_line().await {
@@ -617,6 +621,7 @@ async fn main() {
                         if let Some(s) = v.get("speedKmh").and_then(|x| x.as_f64()) {
                             *speed.lock().unwrap() = s as f32;
                         }
+                        *pose_time.lock().unwrap() = now_ms();
                         *ext.lock().unwrap() = true;
                     }
                     println!("🔌 Actuation bridge disconnected");
@@ -647,6 +652,43 @@ async fn main() {
                         // connectivity — the latch travels over local IPC.
                         let _ = act_for_watchdog.send(state_event(true));
                         println!("⚠️ LOCAL WATCHDOG TRIGGERED! Cloud silent >3s → latched SAFE-STOP (local, zero connectivity).");
+                    }
+                }
+            }
+        });
+    }
+
+    // -------------------- Pose-staleness watchdog (fail-closed) --------------------
+    // Once a bridge has fed ground truth, silence on the pose feed means the
+    // kernel no longer knows where the vehicle is or how fast it moves — and
+    // the geofence reads exactly that state. The bridge brakes on a CLEAN
+    // socket loss itself; this covers the hard-killed bridge whose last CARLA
+    // control keeps acting. Fail-closed: latch after 3 s of pose silence.
+    // While the feed stays silent an operator CLEAR re-latches within 1 s —
+    // no motion command is honoured without a ground-truth basis. Note the
+    // last known location/speed stay as-is (reporting zeros would be a lie);
+    // the SAFE_STOPPED state is the staleness signal. Thresholds get tuned
+    // with OP-7 (watchdog timers) in the pilot.
+    {
+        let pose_time = last_pose_time.clone();
+        let ext = external_pose.clone();
+        let latch = latched.clone();
+        let act = actuation_tx.clone();
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                if !*ext.lock().unwrap() { continue; }
+                let last = *pose_time.lock().unwrap();
+                if now_ms() > last + 3000 {
+                    let mut l = latch.lock().unwrap();
+                    if !*l {
+                        *l = true;
+                        drop(l);
+                        // If the bridge reconnects it converges on this latch
+                        // via the connect snapshot and brakes.
+                        let _ = act.send(state_event(true));
+                        println!("⚠️ POSE FEED SILENT >3s! Ground truth lost → latched SAFE-STOP (fail-closed).");
                     }
                 }
             }
