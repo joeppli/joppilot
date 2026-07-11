@@ -1,0 +1,4 @@
+# Only needed when CARLA_MOCK != 1 — the bridge itself is stdlib-only.
+# The wheel version MUST match the simulator version (CARLA ships matched
+# client wheels); 0.9.15 is the assumed dev simulator.
+carla==0.9.15

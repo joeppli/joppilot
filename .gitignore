@@ -66,6 +66,8 @@ certs/
 # Greengrass core identity + filled installer config (machine-local)
 edge/greengrass/gg-certs/
 edge/greengrass/gg-config/
+# Vehicle-thing cert bundle mounted into the core for the VEA component
+edge/greengrass/veh-certs/
 
 # ── Databases ─────────────────────────────────────────────────
 *.sqlite

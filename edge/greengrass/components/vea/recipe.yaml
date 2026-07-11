@@ -1,0 +1,57 @@
+# Greengrass component recipe — Joppilot VEA safety kernel (M3-1, AD-16).
+# Template: publish.sh substitutes {{ARTIFACTS_BUCKET}} / {{COMPONENT_VERSION}}
+# and registers the rendered recipe with `create-component-version`.
+#
+# The kernel keeps its own direct mTLS MQTT connection as thing {vehicleId}
+# (M3-1 design decision — the core is the deployment/lifecycle layer only),
+# so the component config carries the vehicle cert paths, not Greengrass IPC.
+RecipeFormatVersion: '2020-01-25'
+ComponentName: ch.joppilot.vea
+ComponentVersion: '{{COMPONENT_VERSION}}'
+ComponentDescription: >-
+  Joppilot VEA safety kernel (Gate 2, AD-16/RES-01): command validation
+  (schema/signature/TTL/token/idempotency), zone-mode matrix, geofence,
+  latched safe-stop, local watchdog, actuation IPC for the ADS/sim bridge.
+ComponentPublisher: Joppilot
+ComponentConfiguration:
+  DefaultConfiguration:
+    vehicleId: VEH-001
+    # Seeds revision 0 only — the cloud delivers signed zone-configs at runtime.
+    zoneTypeSeed: public_approved_route
+    # REQUIRED at deployment (merge): base64 raw Ed25519 cloud public key.
+    # The kernel is FAIL-CLOSED and refuses to start with this empty (ICD §4).
+    cloudPubkey: ''
+    # Empty = local mosquitto on localhost:1883 (dev). Set to the ATS data
+    # endpoint for cloud IoT; then the cert paths below must exist on the core
+    # (docker-compose mounts ./veh-certs — see edge/greengrass/README.md).
+    awsIotEndpoint: ''
+    certRootCaPath: /veh-certs/AmazonRootCA1.pem
+    certPath: /veh-certs/device.pem.crt
+    keyPath: /veh-certs/private.pem.key
+    # Local NDJSON/TCP socket the CARLA bridge connects to.
+    actuationAddr: 127.0.0.1:7077
+Manifests:
+  - Platform:
+      os: linux
+    Lifecycle:
+      Run:
+        Script: |-
+          export EDGE_VEHICLE_ID='{configuration:/vehicleId}'
+          export EDGE_ZONE_TYPE='{configuration:/zoneTypeSeed}'
+          export EDGE_CLOUD_PUBKEY='{configuration:/cloudPubkey}'
+          export EDGE_ACTUATION_ADDR='{configuration:/actuationAddr}'
+          export EDGE_SCHEMA_PATH='{artifacts:path}/CommandEnvelope.json'
+          export EDGE_ZONECONFIG_SCHEMA_PATH='{artifacts:path}/ZoneConfig.json'
+          export AWS_IOT_ENDPOINT='{configuration:/awsIotEndpoint}'
+          export AWS_CERT_ROOT_CA_PATH='{configuration:/certRootCaPath}'
+          export AWS_CERT_CERT_PATH='{configuration:/certPath}'
+          export AWS_CERT_PRIVATE_KEY_PATH='{configuration:/keyPath}'
+          exec '{artifacts:path}/vea'
+    Artifacts:
+      - URI: s3://{{ARTIFACTS_BUCKET}}/ch.joppilot.vea/{{COMPONENT_VERSION}}/vea
+        Permission:
+          Execute: OWNER
+      # The contract schemas ride along as artifacts: the kernel is fail-closed
+      # without them (it validates every command/zone-config against the contract).
+      - URI: s3://{{ARTIFACTS_BUCKET}}/ch.joppilot.vea/{{COMPONENT_VERSION}}/CommandEnvelope.json
+      - URI: s3://{{ARTIFACTS_BUCKET}}/ch.joppilot.vea/{{COMPONENT_VERSION}}/ZoneConfig.json

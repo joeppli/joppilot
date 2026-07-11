@@ -1,6 +1,9 @@
 use rumqttc::{AsyncClient, MqttOptions, QoS, Event, Incoming, TlsConfiguration, Transport};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
+use tokio::sync::broadcast;
 use tokio::time;
 use std::sync::{Arc, Mutex};
 use std::collections::{HashMap, VecDeque};
@@ -333,6 +336,28 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+// ------------------------------------------------------------------
+// Actuation IPC events (M1-5/M3-1). The kernel is the server on a local
+// TCP socket; the CARLA bridge (sim ADS adapter, NON-safety) connects and
+// receives NDJSON: `command` events only for envelopes that PASSED Gate 2,
+// and `state` events carrying the latch so the bridge can fail-safe (brake)
+// on E-STOP/watchdog/geofence without understanding any command semantics.
+// ------------------------------------------------------------------
+fn state_event(latched: bool) -> String {
+    format!(r#"{{"type":"state","latched":{},"timestamp":{}}}"#, latched, now_ms())
+}
+
+fn command_event(command_id: &str, action: &str, payload: &Value) -> String {
+    serde_json::json!({
+        "type": "command",
+        "commandId": command_id,
+        "action": action,
+        "payload": payload,
+        "timestamp": now_ms(),
+    })
+    .to_string()
+}
+
 fn ack_json(command_id: &str, status: &str, reason: Option<&str>) -> String {
     match reason {
         Some(r) => format!(
@@ -516,12 +541,96 @@ async fn main() {
     // Live road speed (km/h), produced by the telemetry loop. The disruptive-diag
     // gate (ICD §1) reads it to decide if the vehicle is in a safe stationary state.
     let speed_state = Arc::new(Mutex::new(0.0f32));
+    // True once an actuation bridge has fed a pose: the internal motion sim
+    // switches off so kernel state mirrors CARLA ground truth (sticky — two
+    // writers on location would fight).
+    let external_pose = Arc::new(Mutex::new(false));
+
+    // -------------------- Actuation IPC server (M3-1, B-boundary stand-in) --------
+    // Verified-commands-out / pose-in channel for the CARLA bridge. Losing the
+    // bridge is fail-safe (nothing actuates); a slow bridge never blocks the
+    // kernel (bounded broadcast, lagged events dropped — the 1 Hz state
+    // snapshot re-converges the latch on the bridge side).
+    let (actuation_tx, _) = broadcast::channel::<String>(64);
+    {
+        let addr = env::var("EDGE_ACTUATION_ADDR").unwrap_or_else(|_| "127.0.0.1:7077".to_string());
+        let tx = actuation_tx.clone();
+        let latch_for_ipc = latched.clone();
+        let loc_for_ipc = location_state.clone();
+        let speed_for_ipc = speed_state.clone();
+        let ext_for_ipc = external_pose.clone();
+        tokio::spawn(async move {
+            let listener = match TcpListener::bind(&addr).await {
+                Ok(l) => {
+                    println!("Actuation IPC listening on {} (CARLA bridge connects here)", addr);
+                    l
+                }
+                Err(e) => {
+                    // Fail-safe direction: no actuation channel = nothing moves.
+                    eprintln!("⚠️ Actuation IPC bind failed on {}: {} — running without actuation.", addr, e);
+                    return;
+                }
+            };
+            loop {
+                let Ok((sock, peer)) = listener.accept().await else { continue };
+                println!("🔌 Actuation bridge connected from {}", peer);
+                let mut rx = tx.subscribe();
+                let (read_half, mut write_half) = sock.into_split();
+
+                // Latch snapshot first, so a (re)connecting bridge converges
+                // immediately (it may have missed the latching event).
+                let snapshot = state_event(*latch_for_ipc.lock().unwrap());
+                if write_half.write_all(format!("{}\n", snapshot).as_bytes()).await.is_err() {
+                    continue;
+                }
+
+                // Writer: forward broadcast events to this bridge.
+                tokio::spawn(async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(line) => {
+                                if write_half.write_all(format!("{}\n", line).as_bytes()).await.is_err() {
+                                    break;
+                                }
+                            }
+                            // Dropped events are fine: state snapshots re-converge.
+                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                });
+
+                // Reader: pose feedback from the bridge (sim ground truth for
+                // geofence/telemetry — the vehicle knows where IT is, ICD §1).
+                let loc = loc_for_ipc.clone();
+                let speed = speed_for_ipc.clone();
+                let ext = ext_for_ipc.clone();
+                tokio::spawn(async move {
+                    let mut lines = BufReader::new(read_half).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+                        if v.get("type").and_then(|t| t.as_str()) != Some("pose") { continue; }
+                        let lat = v.get("lat").and_then(|x| x.as_f64());
+                        let lng = v.get("lng").and_then(|x| x.as_f64());
+                        let (Some(lat), Some(lng)) = (lat, lng) else { continue };
+                        *loc.lock().unwrap() = (lat, lng);
+                        if let Some(s) = v.get("speedKmh").and_then(|x| x.as_f64()) {
+                            *speed.lock().unwrap() = s as f32;
+                        }
+                        *ext.lock().unwrap() = true;
+                    }
+                    println!("🔌 Actuation bridge disconnected");
+                });
+            }
+        });
+    }
 
     // -------------------- Local watchdog / deadman (RES-01/04) --------------------
     {
         let watchdog_last_contact = last_contact_time.clone();
         let watchdog_latch = latched.clone();
         let watchdog_armed_c = watchdog_armed.clone();
+        let act_for_watchdog = actuation_tx.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(1));
             loop {
@@ -533,6 +642,10 @@ async fn main() {
                     let mut l = watchdog_latch.lock().unwrap();
                     if !*l {
                         *l = true;
+                        drop(l);
+                        // The bridge must brake on this even with zero cloud
+                        // connectivity — the latch travels over local IPC.
+                        let _ = act_for_watchdog.send(state_event(true));
                         println!("⚠️ LOCAL WATCHDOG TRIGGERED! Cloud silent >3s → latched SAFE-STOP (local, zero connectivity).");
                     }
                 }
@@ -548,6 +661,8 @@ async fn main() {
         let latch_for_telemetry = latched.clone();
         let zone_for_telemetry = zone_state.clone();
         let speed_for_telemetry = speed_state.clone();
+        let ext_for_telemetry = external_pose.clone();
+        let act_for_telemetry = actuation_tx.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(100));
             let mut speed = 10.0;
@@ -560,16 +675,21 @@ async fn main() {
                 tick_count += 1;
 
                 let is_latched = *latch_for_telemetry.lock().unwrap();
+                // A connected bridge feeds ground truth (pose/speed) — the
+                // internal motion sim must not fight it.
+                let ext = *ext_for_telemetry.lock().unwrap();
 
-                if tick_count % 10 == 0 && !is_latched {
-                    speed = if speed > 25.0 { 10.0 } else { speed + 1.0 };
+                if !ext {
+                    if tick_count % 10 == 0 && !is_latched {
+                        speed = if speed > 25.0 { 10.0 } else { speed + 1.0 };
+                    }
+                    if is_latched { speed = 0.0; }
+                    *speed_for_telemetry.lock().unwrap() = speed;
                 }
-                if is_latched { speed = 0.0; }
-                *speed_for_telemetry.lock().unwrap() = speed;
 
                 let (lat, lng) = {
                     let mut loc = location_for_telemetry.lock().unwrap();
-                    if !is_latched {
+                    if !is_latched && !ext {
                         loc.0 += 0.00002 * dir;
                         loc.1 += 0.00002 * dir;
                         if loc.0 > 47.3795 || loc.0 < 47.3705 { dir = -dir; }
@@ -586,8 +706,12 @@ async fn main() {
                 // covers the case where something happens to arrive).
                 let is_latched = if zone == "out_of_tod" && !is_latched {
                     *latch_for_telemetry.lock().unwrap() = true;
-                    *speed_for_telemetry.lock().unwrap() = 0.0;
-                    speed = 0.0;
+                    if !ext {
+                        *speed_for_telemetry.lock().unwrap() = 0.0;
+                        speed = 0.0;
+                    }
+                    // Local IPC latch → the bridge brakes the sim vehicle.
+                    let _ = act_for_telemetry.send(state_event(true));
                     println!("⚠️ GEOFENCE VIOLATION at ({:.4},{:.4}) → latched SAFE-STOP (RES-03).", lat, lng);
                     true
                 } else {
@@ -600,7 +724,9 @@ async fn main() {
                     vehicle_id: vehicle_id.to_string(),
                     timestamp: now_ms(),
                     location: Location { lat, lng },
-                    speed_kmh: speed,
+                    // The mutex is authoritative: fed by the bridge pose when
+                    // one is connected, by the sim block above otherwise.
+                    speed_kmh: *speed_for_telemetry.lock().unwrap(),
                     vehicle_state: state.to_string(),
                     mode: OperationMode::MODE1,
                     battery: BatteryTelemetry { voltage_v: 400.0, current_a: 10.5, temperature_c: 30.0, percent: 85.0 },
@@ -623,6 +749,7 @@ async fn main() {
         let location_for_hb = location_state.clone();
         let latch_for_hb = latched.clone();
         let zone_for_hb = zone_state.clone();
+        let act_for_hb = actuation_tx.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(1));
             let mut seq: u64 = 0;
@@ -631,6 +758,9 @@ async fn main() {
                 seq += 1;
                 let (lat, lng) = *location_for_hb.lock().unwrap();
                 let is_latched = *latch_for_hb.lock().unwrap();
+                // 1 Hz latch snapshot on the actuation IPC: re-converges a
+                // bridge that lagged/dropped an event (its fail-safe input).
+                let _ = act_for_hb.send(state_event(is_latched));
                 let hb = Heartbeat {
                     vehicle_id: vehicle_id.to_string(),
                     timestamp: now_ms(),
@@ -925,6 +1055,10 @@ async fn main() {
 
             if is_estop || is_safe_stop {
                 *latched.lock().unwrap() = true;
+                // Latch + the stop command itself go to the bridge: braking
+                // must not wait for the next 1 Hz snapshot.
+                let _ = actuation_tx.send(state_event(true));
+                let _ = actuation_tx.send(command_event(&cid, if is_estop { "E_STOP" } else { "SAFE_STOP" }, &envelope.payload));
                 let tag = if is_estop { "🚨 E-STOP" } else { "🛑 SAFE-STOP" };
                 println!("{} APPLIED → latched. ID: {}", tag, cid);
                 let ack = ack_json(&cid, "ACK", None);
@@ -956,6 +1090,8 @@ async fn main() {
                     if action == "CLEAR_SAFE_STOP" {
                         *l = false;
                         drop(l);
+                        let _ = actuation_tx.send(state_event(false));
+                        let _ = actuation_tx.send(command_event(&cid, "CLEAR_SAFE_STOP", &envelope.payload));
                         println!("🔓 SAFE-STOP latch released by authorized CLEAR_SAFE_STOP. ID: {}", cid);
                         let ack = ack_json(&cid, "ACK", None);
                         remember_ack(&seen_commands, &cid, &ack);
@@ -986,6 +1122,7 @@ async fn main() {
             if zone == "out_of_tod" && matches!(envelope.mode, OperationMode::MODE1 | OperationMode::MODE2) {
                 // Outside the approved zone → refuse and latch a safe-stop (ICD §1/§9).
                 *latched.lock().unwrap() = true;
+                let _ = actuation_tx.send(state_event(true));
                 println!("⛔ COMMAND REJECTED! Outside approved zone ({:.4},{:.4}) → latched SAFE-STOP. ID: {}", lat, lng, cid);
                 let ack = ack_json(&cid, "REJECTED", Some("GEOFENCE_VIOLATION"));
                 remember_ack(&seen_commands, &cid, &ack);
@@ -1055,6 +1192,9 @@ async fn main() {
                 println!("✅ MANEUVER {} applied (option: '{}') for proposal {}. ID: {}",
                     action, resolved_option, decision_proposal_id, cid);
 
+                // The decision reaches the (sim) ADS side over the same IPC.
+                let _ = actuation_tx.send(command_event(&cid, &action, &envelope.payload));
+
                 let ack = ack_json(&cid, "ACK", None);
                 remember_ack(&seen_commands, &cid, &ack);
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
@@ -1072,6 +1212,8 @@ async fn main() {
             }
 
             // 8) Accepted ------------------------------------------------
+            // Only now — past EVERY gate — does the command reach actuation.
+            let _ = actuation_tx.send(command_event(&cid, &action, &envelope.payload));
             println!("✅ COMMAND ACCEPTED '{}' mode={:?} zone='{}' ({:.4},{:.4}). ID: {}", action, envelope.mode, zone, lat, lng, cid);
             let ack = ack_json(&cid, "ACK", None);
             remember_ack(&seen_commands, &cid, &ack);

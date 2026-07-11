@@ -78,8 +78,47 @@ aws greengrassv2 list-core-devices --region eu-central-1
 # expect: VEH-001-core with status HEALTHY
 ```
 
-## 5. Next (M3-1 continued)
+## 5. Vehicle identity for the VEA component (once)
 
-- VEA component: package the Rust kernel binary as a custom component
-  (recipe + artifact in the `joppilot-dev-gg-artifacts-*` bucket).
-- CARLA bridge component (Python, official SDK) — CARLA localhost:2000 ↔ kernel.
+The VEA kernel keeps its own direct mTLS connection as thing `VEH-001`
+(separate from the core's identity). Pull the VEHICLE cert bundle the same way
+as step 2, from the secret the iot module wrote (`joppilot-dev-vehicle-VEH-001`
+class), and place it under `edge/greengrass/veh-certs/`:
+
+```
+veh-certs/AmazonRootCA1.pem
+veh-certs/device.pem.crt
+veh-certs/private.pem.key
+```
+
+(gitignored; docker-compose mounts it read-only at `/veh-certs` — the paths the
+VEA recipe's default configuration points at.)
+
+## 6. Publish the components (per code change)
+
+`components/` holds the recipes + tooling for the two M3-1 components:
+
+- **`ch.joppilot.vea`** — the Rust safety kernel, built as a static musl
+  binary; the contract schemas ride along as artifacts (fail-closed kernel).
+- **`ch.joppilot.carla-bridge`** — Python sim ADS adapter; receives
+  Gate-2-verified commands over the kernel's local actuation IPC
+  (127.0.0.1:7077), applies them to CARLA (localhost:2000), feeds ground-truth
+  pose back. `carlaMock: '1'` runs it without a simulator.
+
+```bash
+cd edge/greengrass/components
+./publish.sh 0.1.0                 # build binary + upload artifacts + register both
+CLOUD_PUBKEY=<b64 pubkey> ./deploy.sh 0.1.0   # deployment → VEH-001-core
+```
+
+Needs docker + AWS credentials on the same machine (CloudShell cannot build
+the binary). Component versions are immutable — bump the version to ship a
+change. `CARLA_MOCK=1 ./deploy.sh ...` deploys the bridge in mock mode.
+
+Verify on the core:
+
+```bash
+docker compose logs -f   # expect both components RUNNING; kernel prints
+                         # "Actuation IPC listening", bridge prints "connected to VEA kernel"
+aws greengrassv2 list-effective-deployments --core-device-thing-name VEH-001-core --region eu-central-1
+```

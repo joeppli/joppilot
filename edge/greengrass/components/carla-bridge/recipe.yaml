@@ -1,0 +1,47 @@
+# Greengrass component recipe — Joppilot CARLA bridge (M3-1, sim ADS adapter).
+# Template: publish.sh substitutes {{ARTIFACTS_BUCKET}} / {{COMPONENT_VERSION}}.
+#
+# NON-safety: it only ever sees commands the VEA kernel already verified
+# (Gate 2), and it fail-safes (brakes) whenever the kernel link drops or the
+# kernel reports a latch. CARLA runs on the host at localhost:2000 — that is
+# why the core container uses host networking.
+RecipeFormatVersion: '2020-01-25'
+ComponentName: ch.joppilot.carla-bridge
+ComponentVersion: '{{COMPONENT_VERSION}}'
+ComponentDescription: >-
+  CARLA bridge: applies VEA-verified commands to the CARLA vehicle and feeds
+  ground-truth pose back to the kernel. CARLA_MOCK=1 runs a kinematic mock
+  (no simulator needed) for smoke tests.
+ComponentPublisher: Joppilot
+ComponentDependencies:
+  ch.joppilot.vea:
+    VersionRequirement: '>=0.1.0'
+    DependencyType: SOFT
+ComponentConfiguration:
+  DefaultConfiguration:
+    veaAddr: 127.0.0.1:7077
+    carlaHost: 127.0.0.1
+    carlaPort: '2000'
+    # '1' = kinematic mock (no carla wheel install, no simulator).
+    carlaMock: '0'
+    poseHz: '10'
+Manifests:
+  - Platform:
+      os: linux
+    Lifecycle:
+      Install:
+        Script: |-
+          if [ '{configuration:/carlaMock}' != '1' ]; then
+            python3 -m pip install --user -r '{artifacts:path}/requirements.txt'
+          fi
+      Run:
+        Script: |-
+          export VEA_ACTUATION_ADDR='{configuration:/veaAddr}'
+          export CARLA_HOST='{configuration:/carlaHost}'
+          export CARLA_PORT='{configuration:/carlaPort}'
+          export CARLA_MOCK='{configuration:/carlaMock}'
+          export BRIDGE_POSE_HZ='{configuration:/poseHz}'
+          exec python3 -u '{artifacts:path}/bridge.py'
+    Artifacts:
+      - URI: s3://{{ARTIFACTS_BUCKET}}/ch.joppilot.carla-bridge/{{COMPONENT_VERSION}}/bridge.py
+      - URI: s3://{{ARTIFACTS_BUCKET}}/ch.joppilot.carla-bridge/{{COMPONENT_VERSION}}/requirements.txt
