@@ -19,6 +19,9 @@ services:
     volumes:
       - ./gg-config:/tmp/config:ro # config.yaml (from config.yaml.tpl)
       - ./gg-certs:/tmp/certs:ro   # cert bundle (README step 2)
+      # VEHICLE identity (thing VEH-001) for the VEA component — the kernel
+      # keeps its own direct mTLS connection, separate from the core's certs.
+      - ./veh-certs:/veh-certs:ro
       - gg-root:/greengrass/v2
 
 volumes:
