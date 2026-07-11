@@ -1,0 +1,46 @@
+name: edge-build
+
+# Merge gate for the on-vehicle edge code — neither the terraform nor the
+# docker-build workflow watches edge/**, so without this a PR touching the
+# safety kernel or the CARLA bridge would merge with zero CI.
+#   - safety kernel: cargo build --locked in the SAME image the local verify
+#     flow uses (rust:1-slim), so CI failures reproduce locally 1:1
+#   - CARLA bridge: syntax check (stdlib-only in mock mode; the carla wheel
+#     is a runtime install on the core, not a CI dependency)
+# No AWS access needed — build-only.
+
+on:
+  pull_request:
+    paths:
+      - "edge/**"
+      - ".github/workflows/edge-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "edge/**"
+      - ".github/workflows/edge-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edge-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build safety kernel (rust:1-slim, locked deps)
+        run: docker run --rm -v "$PWD":/w -w /w/edge/sim rust:1-slim cargo build --locked
+
+  bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax-check CARLA bridge
+        run: python3 -m py_compile edge/carla-bridge/bridge.py
