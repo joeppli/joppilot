@@ -1,0 +1,61 @@
+{
+  "$comment": "GENERATED from @joppilot/contract (ICD §1/§4) — do not edit; regenerate with: pnpm --filter @joppilot/contract build",
+  "zoneModeMatrix": {
+    "public_approved_route": {
+      "mode1": true,
+      "mode2": false,
+      "diagRead": true,
+      "diagActions": true
+    },
+    "public_test_permit": {
+      "mode1": true,
+      "mode2": true,
+      "diagRead": true,
+      "diagActions": true
+    },
+    "depot": {
+      "mode1": true,
+      "mode2": true,
+      "diagRead": true,
+      "diagActions": true
+    },
+    "private": {
+      "mode1": true,
+      "mode2": true,
+      "diagRead": true,
+      "diagActions": true
+    },
+    "permitted_test": {
+      "mode1": true,
+      "mode2": true,
+      "diagRead": true,
+      "diagActions": true
+    },
+    "out_of_tod": {
+      "mode1": false,
+      "mode2": false,
+      "diagRead": true,
+      "diagActions": false
+    }
+  },
+  "mode2Actions": [
+    "STEER",
+    "DRIVE",
+    "SELECT_DIRECTION",
+    "CREEP",
+    "TURN",
+    "PARK"
+  ],
+  "diagReadActions": [
+    "PULL_LOGS"
+  ],
+  "diagDisruptiveActions": [
+    "RESTART_SERVICE",
+    "RESTART_COMPUTER",
+    "RESTART_SENSOR",
+    "UPDATE_CONFIG"
+  ],
+  "diagRestrictedZones": [
+    "public_approved_route"
+  ]
+}
