@@ -21,11 +21,12 @@ pnpm build                                            # turbo: contract FIRST (s
 (cd services/fleet     && nohup node dist/main > /tmp/fleet.log 2>&1 &)
 
 # Edge — NO local Rust toolchain on this machine: use docker
-docker run --rm -v "$PWD":/w -w /w/edge/sim rust:1.83-slim cargo build
+# (rust:1.83 is too old for the lockfile since M3-1 — base64ct needs edition2024)
+docker run --rm -v "$PWD":/w -w /w/edge/sim rust:1-slim cargo build
 docker run -d --name joppilot_edge --network host -v "$PWD":/w -w /w/edge/sim \
   -e EDGE_ZONE_TYPE=public_approved_route \
   -e EDGE_CLOUD_PUBKEY=MtCOj41fShxsJ6haPWkaNOWXIqPp9PBRmbZ6caosNpM= \
-  rust:1.83-slim ./target/debug/edge
+  rust:1-slim ./target/debug/edge
 ```
 
 ## Drive it
