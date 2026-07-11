@@ -54,11 +54,14 @@ Dockerfile:
 
 ```bash
 git clone https://github.com/aws-greengrass/aws-greengrass-docker /tmp/gg-docker
-cd /tmp/gg-docker && docker build -t aws-iot-greengrass:2.14.3 .
+cd /tmp/gg-docker && docker build -t aws-iot-greengrass:latest .
 ```
 
-(If the Dockerfile defaults to a different nucleus version, keep it and update
-the `image:` tag in docker-compose.yml to match.)
+(The official Dockerfile defaults to `GREENGRASS_RELEASE_VERSION=latest` — it
+downloads whatever the newest nucleus is at build time, so the tag says
+`latest` rather than claiming a specific version. To pin a version instead,
+pass `--build-arg GREENGRASS_RELEASE_VERSION=<x.y.z>`, tag the image with that
+version, and update the `image:` tag in docker-compose.yml to match.)
 
 ## 4. Start the core + verify
 
