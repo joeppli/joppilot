@@ -920,7 +920,7 @@ async fn main() {
                     println!("⏰ MANEUVER PROPOSAL TIMED OUT → applying safe default '{}'. ID: {}", default_opt, timed_out_id);
                     let status = ManeuverStatusUpdate {
                         proposal_id: timed_out_id,
-                        vehicle_id: "VEH-001".to_string(),
+                        vehicle_id: vehicle_id.to_string(),
                         status: "TIMED_OUT".to_string(),
                         selected_option_id: Some(default_opt),
                         timestamp: now_ms(),
@@ -945,7 +945,7 @@ async fn main() {
 
                 let proposal = ManeuverProposal {
                     proposal_id: proposal_id.clone(),
-                    vehicle_id: "VEH-001".to_string(),
+                    vehicle_id: vehicle_id.to_string(),
                     reason_code: reason.to_string(),
                     context: ManeuverContext {
                         scene_summary: format!("{} at ({:.4}, {:.4})", summary, lat, lng),
@@ -982,7 +982,7 @@ async fn main() {
 
                 let status = ManeuverStatusUpdate {
                     proposal_id: proposal_id.clone(),
-                    vehicle_id: "VEH-001".to_string(),
+                    vehicle_id: vehicle_id.to_string(),
                     status: "PENDING".to_string(),
                     selected_option_id: None,
                     timestamp: now_ms(),
@@ -1119,8 +1119,19 @@ async fn main() {
                 continue;
             }
 
-            // 3) TTL (TTL_EXPIRED, ICD §4) ---------------------------------
-            if now > envelope.timestamp + envelope.ttl_ms {
+            // E-STOP / SAFE_STOP are the highest-priority commands (ICD §3):
+            // stopping is ALWAYS safe to apply, so they must never be refused on
+            // a stale-command technicality. They bypass the TTL gate below for
+            // the SAME reason they bypass the mode-consistency check further
+            // down — refusing a stop fails in the UNSAFE direction, and ICD §4
+            // requires E-STOP to arrive on the first attempt and "never [be]
+            // queued". A delayed E-STOP is still a stop we want applied.
+            let is_estop = p.topic == estop_topic || action == "E_STOP";
+            let is_safe_stop = action == "SAFE_STOP";
+            let is_stop = is_estop || is_safe_stop;
+
+            // 3) TTL (TTL_EXPIRED, ICD §4) — stop commands exempt (see above) --
+            if !is_stop && now > envelope.timestamp + envelope.ttl_ms {
                 println!("⛔ COMMAND REJECTED! TTL expired. ID: {}", cid);
                 let ack = ack_json(&cid, "REJECTED", Some("TTL_EXPIRED"));
                 remember_ack(&seen_commands, &cid, &ack);
@@ -1142,14 +1153,13 @@ async fn main() {
                 if envelope.token.issued_at > *newest { *newest = envelope.token.issued_at; }
             }
 
-            // E-STOP and SAFE_STOP always engage the latch and ACK (highest priority).
-            // E-STOP / SAFE_STOP are handled BEFORE the mode-consistency check
-            // on purpose: refusing a stop command over a label mismatch would
-            // fail in the unsafe direction. Stopping is always safe to apply.
-            let is_estop = p.topic == estop_topic || action == "E_STOP";
-            let is_safe_stop = action == "SAFE_STOP";
-
-            if is_estop || is_safe_stop {
+            // E-STOP and SAFE_STOP always engage the latch and ACK (highest
+            // priority). They are handled BEFORE the mode-consistency check on
+            // purpose — refusing a stop command over a label mismatch would fail
+            // in the unsafe direction. Stopping is always safe to apply.
+            // (is_estop / is_safe_stop / is_stop are computed above the TTL gate,
+            // which these commands deliberately bypass — ICD §3/§4.)
+            if is_stop {
                 *latched.lock().unwrap() = true;
                 // Latch + the stop command itself go to the bridge: braking
                 // must not wait for the next 1 Hz snapshot.
