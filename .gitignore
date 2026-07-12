@@ -27,6 +27,10 @@ pnpm-debug.log*
 
 # ── npm lockfile (we use pnpm) ───────────────────────────────
 package-lock.json
+# EXCEPTION (M3-4a): the Lambda dirs are deliberately OUTSIDE the pnpm
+# workspace — their zips need a plain node_modules layout, so the terraform
+# workflow runs `npm ci` there, which REQUIRES a committed lockfile.
+!infra/lambda/*/package-lock.json
 
 # ── Build / cache output ─────────────────────────────────────
 # NOTE: packages/contract/schemas/*.json are generated from Zod but
