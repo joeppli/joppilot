@@ -134,7 +134,9 @@ node services/command/test/smoke-drive.cjs
 #   cd services/command && ASSIGNMENT_ENFORCEMENT=true node dist/main
 node services/command/test/smoke-assignment.cjs
 
-# Maneuver proposal end-to-end (ICD §6) — expect 11/11 pass
+# Maneuver proposal end-to-end (ICD §6) — expect 15/15 pass
+# (incl. the APPROVE path: CONFIRM_MANEUVER with the proposed option — the EDR
+#  distinguishes "approved the proposal" from "selected an alternative", LEG-05)
 node services/command/test/smoke-maneuver.cjs
 
 # Zone change / permit gate + delivery to the vehicle (ICD §1, DEV-8) —

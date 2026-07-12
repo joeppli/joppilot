@@ -127,7 +127,11 @@ export const EStopCommandSchema = z.object({ action: z.literal('E_STOP'), reason
 // Authorized explicit action that releases a latched safe-stop (ICD §9).
 // The latch never clears on its own (e.g. on reconnection); only this command does.
 export const ClearSafeStopCommandSchema = z.object({ action: z.literal('CLEAR_SAFE_STOP'), reason: z.string().optional() });
-export const ConfirmManeuverCommandSchema = z.object({ action: z.literal('CONFIRM_MANEUVER'), proposalId: z.string() });
+// `optionId` names the option the approval lands on (ICD §6 approve ≠ select
+// alternative: same execution, DIFFERENT evidence — the EDR must show whether
+// the operator approved the ADS's proposed maneuver or picked another). The
+// edge already resolves CONFIRM via payload.optionId when present.
+export const ConfirmManeuverCommandSchema = z.object({ action: z.literal('CONFIRM_MANEUVER'), proposalId: z.string(), optionId: z.string().optional() });
 export const RejectManeuverCommandSchema = z.object({ action: z.literal('REJECT_MANEUVER'), proposalId: z.string() });
 export const SelectAlternativeCommandSchema = z.object({ action: z.literal('SELECT_ALTERNATIVE'), proposalId: z.string(), optionId: z.string() });
 
@@ -168,6 +172,13 @@ export const PullLogsCommandSchema = z.object({ action: z.literal('PULL_LOGS'), 
 
 // ------------------------------------------------------------------
 // THE DISCRIMINATED UNION OF ALL COMMANDS
+//
+// DEV-22 (architecture register): the ICD §4 Mode 1 mission/fleet extras —
+// skip next stop · return to depot · send to charging station · route to
+// specific location · acknowledge/clear warning — are NOT in this catalogue
+// yet. They presuppose the Dispatch service (AD-15 sequencing) and the ADS
+// route/stop feed (OP-9), neither of which exists; ICD §4 itself is marked
+// for expansion. Add them WITH that work, not as dead schema entries.
 // ------------------------------------------------------------------
 export const CommandPayloadSchema = z.discriminatedUnion('action', [
   SafeStopCommandSchema, EStopCommandSchema, ClearSafeStopCommandSchema, ConfirmManeuverCommandSchema, RejectManeuverCommandSchema, SelectAlternativeCommandSchema,

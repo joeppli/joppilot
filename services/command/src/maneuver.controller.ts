@@ -51,7 +51,10 @@ export class ManeuverController {
     let payload: CommandPayload;
     switch (decision) {
       case 'CONFIRM':
-        payload = { action: 'CONFIRM_MANEUVER', proposalId } as CommandPayload;
+        // ICD §6 evidence semantics: approval carries the option it lands on
+        // (usually the ADS's proposed maneuver) so the EDR distinguishes
+        // "approved the proposal" from "selected an alternative".
+        payload = { action: 'CONFIRM_MANEUVER', proposalId, ...(optionId ? { optionId } : {}) } as CommandPayload;
         break;
       case 'REJECT':
         payload = { action: 'REJECT_MANEUVER', proposalId } as CommandPayload;

@@ -117,6 +117,9 @@
                 },
                 "proposalId": {
                   "type": "string"
+                },
+                "optionId": {
+                  "type": "string"
                 }
               },
               "required": [
