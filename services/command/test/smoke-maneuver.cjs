@@ -159,6 +159,34 @@ client.on('connect', () => {
     assert('stale-proposal-404', staleRes.status === 404,
       `Expected 404, got ${staleRes.status}`);
 
+    // 7. APPROVE path (ICD §6): CONFIRM with the proposed option. Same
+    //    execution as SELECT_ALTERNATIVE on the vehicle, DIFFERENT evidence —
+    //    the EDR action must read CONFIRM_MANEUVER (LEG-05). The edge
+    //    generates a fresh proposal ~2s after the previous one resolves.
+    const seen = new Set(proposals.map((p) => p.proposalId));
+    console.log('Waiting for a second proposal to APPROVE (CONFIRM)...');
+    const proposal2 = await waitFor(proposals, (p) => !seen.has(p.proposalId), 15000);
+    assert('confirm-proposal-received', !!proposal2, 'No second proposal within 15s');
+    if (proposal2) {
+      const proposedOption = proposal2.options[0].optionId;
+      // Token may have expired (6s lock TTL) — take a fresh one.
+      const ctl2 = await httpPost(`/api/command/${V}/take-control`, { operatorId: 'OP-SMOKE' });
+      const token2 = ctl2.body?.token ?? token;
+      const confirmRes = await httpPost(`/api/maneuver/${proposal2.proposalId}/decide`, {
+        operatorId: 'OP-SMOKE', token: token2, decision: 'CONFIRM', optionId: proposedOption,
+      });
+      assert('confirm-accepted-as-CONFIRM_MANEUVER',
+        (confirmRes.status === 200 || confirmRes.status === 201) && confirmRes.body?.action === 'CONFIRM_MANEUVER',
+        `Status ${confirmRes.status}: ${JSON.stringify(confirmRes.body)}`);
+      const confirmAck = confirmRes.body?.commandId ? await waitAck(confirmRes.body.commandId, 3000) : null;
+      assert('confirm-edge-ack', confirmAck && confirmAck.status === 'ACK',
+        `Expected ACK, got ${JSON.stringify(confirmAck)}`);
+      const confirmedStatus = await waitFor(statusUpdates,
+        (s) => s.proposalId === proposal2.proposalId && s.status === 'DECIDED', 5000);
+      assert('confirm-decided-with-option', confirmedStatus?.selectedOptionId === proposedOption,
+        `Expected option ${proposedOption}, got ${confirmedStatus?.selectedOptionId}`);
+    }
+
     clearInterval(deadmanInterval);
     finish();
   });
@@ -180,6 +208,6 @@ function finish() {
 }
 
 setTimeout(() => {
-  console.log('\n⏰ Global timeout (60s) reached');
+  console.log('\n⏰ Global timeout (90s) reached');
   finish();
-}, 60000);
+}, 90000);

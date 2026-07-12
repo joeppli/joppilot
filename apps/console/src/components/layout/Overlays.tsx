@@ -37,20 +37,31 @@ export function Overlays() {
             </span>
           </div>
 
-          {activeProposal.options.map(opt => (
-            <button
-              key={opt.optionId}
-              className={`maneuver-opt${opt.optionId === activeProposal.defaultOnTimeout ? ' default' : ''}`}
-              disabled={!hasControl}
-              onClick={() => decideManeuver('SELECT_ALTERNATIVE', opt.optionId)}
-              aria-label={`Select: ${opt.description}. Expected: ${opt.expectedResult}`}
-            >
-              <div style={{ fontWeight: 600 }}>{opt.description}</div>
-              <div className="text-sm muted" style={{ marginTop: 2 }}>{opt.expectedResult}</div>
-              {opt.optionId === activeProposal.defaultOnTimeout &&
-                <div className="text-xs" style={{ color: 'var(--color-warning)', marginTop: 2 }}>Safe default on timeout</div>}
-            </button>
-          ))}
+          {activeProposal.options.map((opt, idx) => {
+            // ICD §6: the operator can APPROVE the proposed maneuver or SELECT
+            // an alternative — the first option is the ADS's own proposal
+            // (B-boundary convention; final schema frozen with the ADS team,
+            // OP-3), so clicking it is an approval (CONFIRM_MANEUVER), any
+            // other option is SELECT_ALTERNATIVE. Same execution on the
+            // vehicle, different evidence in the EDR chain (LEG-05).
+            const isProposed = idx === 0;
+            return (
+              <button
+                key={opt.optionId}
+                className={`maneuver-opt${opt.optionId === activeProposal.defaultOnTimeout ? ' default' : ''}`}
+                disabled={!hasControl}
+                onClick={() => decideManeuver(isProposed ? 'CONFIRM' : 'SELECT_ALTERNATIVE', opt.optionId)}
+                aria-label={`${isProposed ? 'Approve proposed maneuver' : 'Select alternative'}: ${opt.description}. Expected: ${opt.expectedResult}`}
+              >
+                <div style={{ fontWeight: 600 }}>{opt.description}</div>
+                <div className="text-sm muted" style={{ marginTop: 2 }}>{opt.expectedResult}</div>
+                {isProposed &&
+                  <div className="text-xs" style={{ color: 'var(--color-success, #2e7d32)', marginTop: 2 }}>Proposed maneuver — approve</div>}
+                {opt.optionId === activeProposal.defaultOnTimeout &&
+                  <div className="text-xs" style={{ color: 'var(--color-warning)', marginTop: 2 }}>Safe default on timeout</div>}
+              </button>
+            );
+          })}
           <Button variant="ghost" size="sm" disabled={!hasControl} onClick={() => decideManeuver('REJECT')}>
             Reject proposal
           </Button>
