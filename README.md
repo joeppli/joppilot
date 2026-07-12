@@ -33,6 +33,7 @@ recycling vehicles operating on public roads in Switzerland. The autonomy stack 
 - **Operator↔vehicle assignment + revocation** (SEC-04/09, M2-4-4) — admin-granted assignments gate take-control (cloud-enforced; `ASSIGNMENT_ENFORCEMENT=true`); revoking severs an active session immediately (lock deleted → commands/heartbeats fail → vehicle watchdog latches). Every grant/revocation is EDR-logged.
 - **Identity binding** (LEG-05, audit-7) — in the cloud (`AUTH_TRUST_APIGW_JWT=true`) the body-supplied `operatorId` must equal the API-GW-verified JWT identity (`cognito:username`/`sub`), and admin actions are attributed to the authenticated admin — an authenticated operator can no longer act (and be audit-attributed) as someone else. Local dev skips the binding (no identity provider).
 - **Command-channel honesty** (ICD §3, audit-7) — a publish that cannot reach the broker returns **503 PUBLISH_FAILED** (plus an EDR row) instead of a fake success — critical for E-STOP, which must not silently drop; and a command with no vehicle ACK within TTL+grace gets a **NO_ACK** EDR row (visibility only; the retry policy comes with the M2-5 IoT Core backbone). The edge additionally rejects envelopes addressed to a **different vehicle** (`UNAUTHORIZED`) and refuses maneuver decisions arriving **after the decision window** (safe default wins, ICD §6).
+- **Dual-message E-STOP** (ICD §3, M3-3) — `POST /estop` publishes the **same signed envelope simultaneously on two message paths** (dedicated estop topic + command topic); the vehicle stops on whichever arrives first and **dedups the second by `command_id`** (identical ACK replayed — no double stop). One delivered copy = sent; both failing = 503. E-STOP/SAFE_STOP also **bypass the TTL gate on the edge** (a delayed stop is still a stop we want) and are never queued. True dual-**path** (independent transports/carriers, AD-3) lands with the August channel-reliability work.
 - **Permit-gated zone change, delivered to the vehicle** (ICD §1, M2-5 — **DEV-8 closed**) — since M2-5 **every Mode-2-capable zone type** (`public_test_permit`, `depot`, `private`, `permitted_test`) requires an authorization artifact (`permitId` + `validUntil`); the change is published to the vehicle as a **signed, revision-monotonic ZoneConfig document** (retained MQTT topic locally, the `zone-config` named Device Shadow on AWS IoT). The edge verifies the signature against its pinned key, ignores stale/foreign/unverifiable documents (fail-safe: stays on its stricter current zone) and enforces `validUntil` **on the vehicle** — past the window it reverts to `public_approved_route` on its own. `EDGE_ZONE_TYPE` only seeds the initial state. Edge enforcement of `validFrom` + speed limit follows in **M3-5**; the geometry-validated canton zone catalog stays open (DEV-14).
 - **Live map** (AD-15) — swisstopo tiles via MapLibre, vehicle position + approved-zone overlay.
 
@@ -133,6 +134,12 @@ node services/command/test/smoke-drive.cjs
 # Needs the command service restarted with enforcement on (dev default is off):
 #   cd services/command && ASSIGNMENT_ENFORCEMENT=true node dist/main
 node services/command/test/smoke-assignment.cjs
+
+# M3-3 E-STOP path (ICD §3): dual-message publish (estop + command topic,
+# same command_id) → edge applies first, dedups second (IDENTICAL ACK replay),
+# latch in heartbeat, authorized CLEAR releases. Expect 11/11.
+# Needs the command service (4000) + the edge running.
+node services/command/test/smoke-estop.cjs
 
 # Maneuver proposal end-to-end (ICD §6) — expect 15/15 pass
 # (incl. the APPROVE path: CONFIRM_MANEUVER with the proposed option — the EDR
