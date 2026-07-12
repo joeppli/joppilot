@@ -212,6 +212,7 @@ infra/terraform/
 | M2-5a | Command signing (Ed25519, ICD §4) enforced on the vehicle + **zone/permit config delivery to the edge** (signed, revision-monotonic; DEV-8 closed) — local MQTT path | ✅ |
 | M2-5b-1 | IoT Core **infrastructure**: thing type + `VEH-001` thing, topic-scoped vehicle/service IoT policies, X.509 cert provisioning (vehicle + service bundles → Secrets Manager), ATS endpoint. Services stay `MQTT_ENABLED=false` (no behaviour change, ~zero idle cost, not in the destroy button). DEV-12 probe passed 2026-07-09 | ✅ authored |
 | M2-5b-2 | `MQTT_ENABLED=true` for command + telemetry: the IoT service cert bundle is injected **inline** from Secrets Manager (`AWS_CERT_*_PEM`, never on disk), the MQTT clients connect to IoT Core over **mTLS/8883**, and cloud zone changes publish to the `zone-config` Device Shadow. Fleet has no MQTT client — untouched | ✅ authored |
+| M3-4a | Serverless telemetry persistence (AD-14): **IoT Topic Rule** (`vehicles/+/telemetry`) → **SQS** (+DLQ) → **Lambda batch** (VPC, ≤100 rows/insert, max-concurrency 2) → RDS `telemetry_samples`. Cloud telemetry task flips `TELEMETRY_PERSIST=false` (single writer — Lambda owns persistence, task keeps live broadcast + link-loss); persistence now survives the task scaled to 0. No standing cost, not in the destroy button | ✅ authored |
 | later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
 
 ### Ingress path (current)
@@ -314,6 +315,29 @@ curl -X POST -H "Authorization: Bearer <ADMIN_ID_TOKEN>" -H 'Content-Type: appli
 aws iot-data get-thing-shadow --thing-name VEH-001 --shadow-name zone-config \
   --region eu-central-1 /dev/stdout | jq .state.desired.config
 # → the signed ZoneConfig document the edge will verify + apply on connect.
+```
+
+**Verify the serverless telemetry pipeline (M3-4a)** — with the sim edge
+connected to cloud IoT (below), telemetry persists WITHOUT the telemetry task:
+
+```bash
+# The IoT Rule + queue + Lambda exist:
+aws iot get-topic-rule --rule-name joppilot_dev_telemetry_ingest_rule --region eu-central-1 | head -20
+aws lambda get-function --function-name joppilot-dev-telemetry-ingest --region eu-central-1 --query Configuration.State
+
+# Run the sim edge against cloud IoT (or publish one telemetry message by hand
+# with the vehicle cert), then watch the batch inserts land:
+aws logs tail /aws/lambda/joppilot-dev-telemetry-ingest --since 5m --region eu-central-1
+# → "Inserted N telemetry rows"
+
+# Rows in the DB (via any task with DB access, or a temporary bastion —
+# count should GROW while the edge runs even with the telemetry service at 0):
+# SELECT count(*), max(to_timestamp(ts/1000)) FROM telemetry_samples;
+
+# Poisoned-message path: the DLQ stays empty in normal operation.
+aws sqs get-queue-attributes --queue-url $(aws sqs get-queue-url \
+  --queue-name joppilot-dev-telemetry-ingest-dlq --query QueueUrl --output text \
+  --region eu-central-1) --attribute-names ApproximateNumberOfMessages --region eu-central-1
 ```
 
 **Connect the sim edge to cloud IoT Core — full A-boundary end-to-end (M2-5, slice C).**

@@ -1,0 +1,10 @@
+{
+  "name": "joppilot-telemetry-ingest",
+  "private": true,
+  "version": "0.1.0",
+  "description": "M3-4a: IoT Rule -> SQS -> Lambda batch -> RDS telemetry_samples (AD-14). Deps installed by the terraform workflow (npm ci) before archive_file zips this directory. NOT a pnpm workspace member on purpose - the Lambda zip needs a plain node_modules layout.",
+  "type": "module",
+  "dependencies": {
+    "pg": "8.16.3"
+  }
+}

@@ -22,6 +22,11 @@ export class TelemetryWriterService implements OnModuleInit, OnModuleDestroy {
   // later (RTP-08) — a stale telemetry backlog is worthless and unbounded.
   private ready = false;
   private dropWarned = false;
+  // M3-4a single-writer rule: in the cloud, persistence belongs to the
+  // IoT Rules → SQS → Lambda pipeline; the task runs TELEMETRY_PERSIST=false
+  // and keeps only the live broadcast + link-loss. Local dev (no IoT Rules)
+  // leaves this true and the writer behaves exactly as before.
+  private readonly persistEnabled = process.env.TELEMETRY_PERSIST !== 'false';
 
   private static readonly FLUSH_INTERVAL_MS = 1000;
   private static readonly FLUSH_THRESHOLD = 200; // flush early if buffer fills
@@ -29,6 +34,10 @@ export class TelemetryWriterService implements OnModuleInit, OnModuleDestroy {
   private static readonly RETRY_MS = 5000;
 
   async onModuleInit() {
+    if (!this.persistEnabled) {
+      this.logger.log('TELEMETRY_PERSIST=false — persistence owned by the IoT Rules → Lambda pipeline (M3-4a); writer inactive.');
+      return;
+    }
     this.pool = new Pool({
       connectionString: process.env.DATABASE_URL,
       max: 4,
@@ -92,6 +101,7 @@ export class TelemetryWriterService implements OnModuleInit, OnModuleDestroy {
   }
 
   enqueue(payload: TelemetryPayload) {
+    if (!this.persistEnabled) return; // pipeline owns persistence (M3-4a)
     if (!this.ready) {
       // RTP-08: drop, don't backlog. Live consoles still get the broadcast.
       if (!this.dropWarned) {

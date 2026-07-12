@@ -116,12 +116,32 @@ module "rds" {
   subnet_ids  = module.network.private_subnet_ids
 
   # DEV-6 closed (M2-4-3): PostgreSQL ingress is restricted to the three
-  # service task SGs — the VPC-wide CIDR rule is gone.
+  # service task SGs — the VPC-wide CIDR rule is gone. M3-4a adds the
+  # telemetry-ingest Lambda as the fourth (and only serverless) writer.
   allowed_security_group_ids = {
-    command   = module.service_command.task_security_group_id
-    telemetry = module.service_telemetry.task_security_group_id
-    fleet     = module.service_fleet.task_security_group_id
+    command          = module.service_command.task_security_group_id
+    telemetry        = module.service_telemetry.task_security_group_id
+    fleet            = module.service_fleet.task_security_group_id
+    telemetry_lambda = module.telemetry_pipeline.lambda_security_group_id
   }
+}
+
+# --- M3-4a: serverless telemetry persistence (AD-14) ---------------------------
+# IoT Rule (vehicles/+/telemetry) → SQS → Lambda batch → RDS telemetry_samples.
+# The ECS telemetry service keeps the LIVE side (Socket.IO broadcast, link-loss)
+# but no longer persists in the cloud (TELEMETRY_PERSIST=false below) — single
+# writer, and persistence survives the Fargate task being scaled to 0.
+# No standing cost → NOT a destroy-billables target (same rule as module.iot).
+# DEV-12: probe IoT Rules + Lambda + SQS on the free plan BEFORE merging this.
+module "telemetry_pipeline" {
+  source        = "../../modules/telemetry-pipeline"
+  name_prefix   = "joppilot-${var.environment}"
+  vpc_id        = module.network.vpc_id
+  subnet_ids    = module.network.private_subnet_ids
+  db_host       = module.rds.db_host
+  db_port       = module.rds.port
+  db_name       = module.rds.database_name
+  db_secret_arn = module.rds.master_user_secret_arn
 }
 
 # --- M2-4-3: ElastiCache Serverless Valkey — the fencing-lock cache (SEC-05) ---
@@ -255,6 +275,9 @@ module "service_telemetry" {
     DB_SSL           = "true"
     MQTT_ENABLED     = "true"
     AWS_IOT_ENDPOINT = module.iot.iot_endpoint
+    # M3-4a single-writer rule: persistence moved to the IoT Rules → SQS →
+    # Lambda pipeline; this task keeps the live broadcast + link-loss only.
+    TELEMETRY_PERSIST = "false"
   })
   secrets     = merge(local.db_secrets, local.iot_secrets)
   secret_arns = [module.rds.master_user_secret_arn, module.iot.service_cert_secret_arn]
