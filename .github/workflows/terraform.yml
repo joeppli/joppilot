@@ -16,11 +16,13 @@ on:
   pull_request:
     paths:
       - "infra/terraform/**"
+      - "infra/lambda/**"
       - ".github/workflows/terraform.yml"
   push:
     branches: [main]
     paths:
       - "infra/terraform/**"
+      - "infra/lambda/**"
       - ".github/workflows/terraform.yml"
   workflow_dispatch:
 
@@ -64,6 +66,17 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
+
+      # M3-4a: the telemetry-ingest Lambda zip is built by archive_file at plan
+      # time from infra/lambda/telemetry-ingest — node_modules (pg) must exist
+      # first. Plain npm ON PURPOSE: the Lambda needs a real node_modules
+      # layout in the zip and this directory is NOT a pnpm workspace member
+      # (the repo-root "pnpm only" rule guards the workspace store, not this
+      # isolated dir on a fresh CI checkout).
+      - name: Build telemetry-ingest Lambda deps
+        if: ${{ vars.AWS_CI_ROLE_ARN != '' }}
+        working-directory: infra/lambda/telemetry-ingest
+        run: npm ci --omit=dev --ignore-scripts
 
       - name: Terraform fmt (check)
         if: ${{ vars.AWS_CI_ROLE_ARN != '' }}

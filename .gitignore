@@ -97,3 +97,6 @@ override.tf.json
 *.auto.tfvars
 .terraformrc
 terraform.rc
+
+# M3-4a: archive_file zip output for the telemetry-ingest Lambda
+infra/terraform/modules/*/.build/
