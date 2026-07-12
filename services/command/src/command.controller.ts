@@ -357,6 +357,40 @@ export class CommandController {
     await this.logEdr(commandId, vehicleId, operatorId, payload.action, 'PENDING', envelope, envelope.correlationId);
 
     const topic = `joppilot/v1/vehicles/${vehicleId}/${channel}`;
+
+    // ICD §3 (M3-3): E-STOP is sent SIMULTANEOUSLY via two separate messages —
+    // the dedicated estop topic AND the regular command topic. The vehicle
+    // stops on whichever arrives first; the second copy carries the SAME
+    // command_id and is deduplicated on the edge (same ACK replayed, ICD §4 —
+    // no double stop). Redundancy semantics: ONE delivered copy is a sent
+    // E-STOP; only both failing is a failure (503). NOTE: locally both
+    // messages ride the same broker/link — true dual-PATH (independent
+    // transports/carriers, AD-3: WebRTC data channel + MQTT) lands with the
+    // August channel-reliability work; M3-3 closes the dual-MESSAGE half.
+    if (channel === 'estop') {
+      const viaEstop = this.mqttService.publish(topic, envelope);
+      const viaCommand = this.mqttService.publish(`joppilot/v1/vehicles/${vehicleId}/command`, envelope);
+      if (!viaEstop && !viaCommand) {
+        await this.logEdr(commandId, vehicleId, operatorId, payload.action, 'PUBLISH_FAILED', { topic, dual: true }, envelope.correlationId);
+        throw new ServiceUnavailableException({
+          reason: 'PUBLISH_FAILED',
+          details: `Command channel to ${vehicleId} is down — ${payload.action} was NOT sent on either message path.`,
+        });
+      }
+      if (!viaEstop || !viaCommand) {
+        // Degraded redundancy is auditable (LEG-04) — the E-STOP is on its
+        // way on one path, but the loss of the second must not be silent.
+        await this.logEdr(commandId, vehicleId, operatorId, payload.action, 'PUBLISH_DEGRADED',
+          { delivered: { estop: viaEstop, command: viaCommand } }, envelope.correlationId);
+      }
+      this.watchForAck(commandId, vehicleId, operatorId, payload.action, envelope.correlationId, envelope.ttlMs);
+      return {
+        status: 'pending', commandId, action: payload.action, mode,
+        channels: { estop: viaEstop, command: viaCommand },
+        message: `${payload.action} published (dual message, ICD §3)`,
+      };
+    }
+
     // Audit-7 finding 4: a silently dropped publish must never look like a
     // sent command — for E-STOP the ICD (§3) demands first-attempt delivery,
     // so the operator needs the failure signal IMMEDIATELY to fall back to

@@ -20,20 +20,26 @@ pnpm build                                            # turbo: contract FIRST (s
 (cd services/telemetry && nohup node dist/main > /tmp/telemetry.log 2>&1 &)
 (cd services/fleet     && nohup node dist/main > /tmp/fleet.log 2>&1 &)
 
-# Edge — NO local Rust toolchain on this machine: use docker
-# (rust:1.83 is too old for the lockfile since M3-1 — base64ct needs edition2024)
-docker run --rm -v "$PWD":/w -w /w/edge/sim rust:1-slim cargo build
-docker run -d --name joppilot_edge --network host -v "$PWD":/w -w /w/edge/sim \
-  -e EDGE_ZONE_TYPE=public_approved_route \
-  -e EDGE_CLOUD_PUBKEY=MtCOj41fShxsJ6haPWkaNOWXIqPp9PBRmbZ6caosNpM= \
-  rust:1-slim ./target/debug/edge
+# Edge — rustup stable is installed since 2026-07-12 (apt rust 1.75 is too old
+# for the v4 lockfile; edge/sim/target is root-owned → use CARGO_TARGET_DIR):
+export PATH="$HOME/.cargo/bin:$PATH" CARGO_TARGET_DIR="$HOME/.cache/joppilot/edge-target"
+(cd edge/sim && cargo build && \
+  EDGE_ZONE_TYPE=public_approved_route \
+  EDGE_CLOUD_PUBKEY=MtCOj41fShxsJ6haPWkaNOWXIqPp9PBRmbZ6caosNpM= \
+  nohup "$CARGO_TARGET_DIR/debug/edge" > /tmp/edge.log 2>&1 &)
+
+# Docker fallback (no rustup): rust:1-slim works, rust:1.83 is too old
+# (base64ct needs edition2024).
+# docker run --rm -v "$PWD":/w -w /w/edge/sim rust:1-slim cargo build
 ```
 
 ## Drive it
 
 ```bash
 node services/command/test/smoke-edge.cjs       # 19/19 — Gate 2 (schema/signature/TTL/token/dedup/mode-spoof/latch/zone-config)
-node services/command/test/smoke-maneuver.cjs   # 11/11 — ICD §6 proposal flow
+node services/command/test/smoke-drive.cjs      # 16/16 — M3-2 driving path over the actuation IPC (plays the CARLA bridge; edge only)
+node services/command/test/smoke-estop.cjs      # 11/11 — M3-3 dual-message E-STOP + command_id dedup (needs command svc + edge)
+node services/command/test/smoke-maneuver.cjs   # 15/15 — ICD §6 proposal flow incl. the APPROVE (CONFIRM) leg
 node services/command/test/smoke-zone.cjs       # 12/12 — permit-gated zone change + delivery to the vehicle (needs edge up)
 docker exec joppilot_postgres psql -U joppilot -d joppilot_db \
   -c 'DELETE FROM fleet."Mission"; DELETE FROM fleet."PreDepartureCheck";'   # fleet smoke needs clean tables
@@ -52,6 +58,13 @@ Manual probes: `POST /api/command/VEH-001/take-control` → token, then
   `SAFE_STOP_LATCHED`. Clear with take-control + `POST .../clear-safe-stop`,
   or just restart the edge container. This is correct RES-01 behaviour, not a bug.
 - Fencing-token lock TTL is 6 s — take a fresh token right before each probe.
+  Re-taking control while the lock is still alive FAILS (SET NX) — long tests
+  keep ONE token alive via `POST .../heartbeat` every ~2 s (also resets the
+  cloud deadman, which otherwise injects its own SAFE_STOP at ~7 s).
+- **The edge's newest_token is monotonic ACROSS suites** (ICD §8): smoke-edge's
+  elevation test pushes it ~100 ms into the future, so a suite started
+  back-to-back in the same second gets `Stale fencing token` on everything.
+  Not a bug — leave ~1 s between smoke suites (or restart the edge).
 - Since M2-5 every command envelope must be SIGNED: services need
   COMMAND_SIGNING_KEY (in .env.example) and the edge needs EDGE_CLOUD_PUBKEY,
   or the edge NACKs everything with SCHEMA_INVALID. Crafted test envelopes
