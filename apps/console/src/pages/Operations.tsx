@@ -41,9 +41,23 @@ export function Operations() {
             {mode2Allowed ? (
               <>
                 <p className="text-sm muted" style={{ marginBottom: 12 }}>Mode 2 direct driving — permitted in zone '{zone}'.</p>
+                {/* Direction (ICD §4: forward / reverse / neutral) */}
+                <p className="text-xs muted" style={{ marginBottom: 6 }}>Direction</p>
+                <div className="row gap-2 wrap" style={{ marginBottom: 10 }}>
+                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'SELECT_DIRECTION', direction: 'FORWARD' })}>Forward</Button>
+                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'SELECT_DIRECTION', direction: 'NEUTRAL' })}>Neutral</Button>
+                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'SELECT_DIRECTION', direction: 'REVERSE' })}>Backward</Button>
+                </div>
+                {/* Steering (ICD §4: left / right) */}
+                <p className="text-xs muted" style={{ marginBottom: 6 }}>Steering</p>
+                <div className="row gap-2 wrap" style={{ marginBottom: 10 }}>
+                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'TURN', direction: 'LEFT' })}>Left</Button>
+                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'TURN', direction: 'RIGHT' })}>Right</Button>
+                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'STEER', angle: 0 })}>Center</Button>
+                </div>
+                {/* Throttle / brake (ICD §4) */}
+                <p className="text-xs muted" style={{ marginBottom: 6 }}>Throttle / brake</p>
                 <div className="row gap-2 wrap" style={{ marginBottom: 12 }}>
-                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'STEER', angle: -5 })}>Steer left</Button>
-                  <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'STEER', angle: 5 })}>Steer right</Button>
                   <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'DRIVE', throttle: 20, brake: 0 })}>Throttle</Button>
                   <Button size="sm" disabled={!hasControl} onClick={() => drive({ action: 'DRIVE', throttle: 0, brake: 50 })}>Brake</Button>
                 </div>

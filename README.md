@@ -123,6 +123,12 @@ With infra + all services + the edge running:
 # Edge Gate-2 smoke test — expect 19/19 pass (incl. signature + zone-config)
 node services/command/test/smoke-edge.cjs
 
+# M3-2 end-to-end driving — cloud→edge→CARLA-bridge command path (ICD §4).
+# Plays the CARLA bridge on the actuation IPC (:7077) and asserts every Mode 2
+# driving command (fwd/back/left/right/throttle/brake) reaches actuation +
+# E-STOP surfaces as a fail-safe latch. Expect 16/16. Needs mosquitto + the edge.
+node services/command/test/smoke-drive.cjs
+
 # Assignment + revocation + handover gate (SEC-04/09) — expect 13/13 pass.
 # Needs the command service restarted with enforcement on (dev default is off):
 #   cd services/command && ASSIGNMENT_ENFORCEMENT=true node dist/main
