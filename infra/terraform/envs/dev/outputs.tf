@@ -137,3 +137,14 @@ output "iot_service_cert_secret_arn" {
   description = "Secrets Manager ARN of the cloud services' IoT cert bundle (mounted into ECS in a later slice)."
   value       = module.iot.service_cert_secret_arn
 }
+
+# --- M3-4b: console live WSS (fills apps/console/.env.local VITE_* vars) -------
+output "console_identity_pool_id" {
+  description = "VITE_IDENTITY_POOL_ID for the console's live-telemetry WSS"
+  value       = module.console_identity.identity_pool_id
+}
+
+output "console_iot_policy_name" {
+  description = "IoT policy to attach per operator identity (DEV-23): aws iot attach-policy --policy-name <this> --target <identityId>"
+  value       = module.console_identity.iot_policy_name
+}

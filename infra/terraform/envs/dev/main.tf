@@ -335,6 +335,20 @@ module "greengrass" {
   vehicle_ids = ["VEH-001"]
 }
 
+# --- M3-4b: console live-telemetry identity (architecture C4: OPC → IoT WSS) ---
+# Identity Pool + read-only IoT viewer role + IoT policy: the console signs a
+# WSS URL with short-lived credentials from the operator's Cognito login and
+# subscribes to telemetry/heartbeat/maneuver topics DIRECTLY on IoT Core.
+# No publish rights — commands stay on the API Gateway → Gate 1 path.
+# Free / no standing cost → NOT a destroy-billables target.
+# DEV-23: the IoT policy must be attached per operator identity (manual in dev).
+module "console_identity" {
+  source              = "../../modules/console-identity"
+  name_prefix         = "joppilot-${var.environment}"
+  user_pool_id        = module.cognito.user_pool_id
+  user_pool_client_id = module.cognito.client_id
+}
+
 # --- M2-3a: Cognito identity + MFA + RBAC groups (free tier, no standing cost) ---
 # The API Gateway Cognito authorizer + internal ALB spine follow in later M2-3 PRs.
 module "cognito" {

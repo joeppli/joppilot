@@ -212,7 +212,8 @@ infra/terraform/
 | M2-5a | Command signing (Ed25519, ICD §4) enforced on the vehicle + **zone/permit config delivery to the edge** (signed, revision-monotonic; DEV-8 closed) — local MQTT path | ✅ |
 | M2-5b-1 | IoT Core **infrastructure**: thing type + `VEH-001` thing, topic-scoped vehicle/service IoT policies, X.509 cert provisioning (vehicle + service bundles → Secrets Manager), ATS endpoint. Services stay `MQTT_ENABLED=false` (no behaviour change, ~zero idle cost, not in the destroy button). DEV-12 probe passed 2026-07-09 | ✅ authored |
 | M2-5b-2 | `MQTT_ENABLED=true` for command + telemetry: the IoT service cert bundle is injected **inline** from Secrets Manager (`AWS_CERT_*_PEM`, never on disk), the MQTT clients connect to IoT Core over **mTLS/8883**, and cloud zone changes publish to the `zone-config` Device Shadow. Fleet has no MQTT client — untouched | ✅ authored |
-| M3-4a | Serverless telemetry persistence (AD-14): **IoT Topic Rule** (`vehicles/+/telemetry`) → **SQS** (+DLQ) → **Lambda batch** (VPC, ≤100 rows/insert, max-concurrency 2) → RDS `telemetry_samples`. Cloud telemetry task flips `TELEMETRY_PERSIST=false` (single writer — Lambda owns persistence, task keeps live broadcast + link-loss); persistence now survives the task scaled to 0. No standing cost, not in the destroy button | ✅ authored |
+| M3-4a | Serverless telemetry persistence (AD-14): **IoT Topic Rule** (`vehicles/+/telemetry`) → **SQS** (+DLQ) → **Lambda batch** (VPC, ≤100 rows/insert, max-concurrency 2) → RDS `telemetry_samples`. Cloud telemetry task flips `TELEMETRY_PERSIST=false` (single writer — Lambda owns persistence, task keeps live broadcast + link-loss); persistence now survives the task scaled to 0. No standing cost, not in the destroy button | ✅ |
+| M3-4b | **Live WSS → console** (architecture C4: `OPC → IoT`): Cognito **Identity Pool** + read-only viewer role — the console signs in via the Hosted UI (PKCE), trades the login for short-lived AWS credentials, SigV4-signs `wss://…/mqtt` and subscribes to telemetry/heartbeat/maneuver topics **directly on IoT Core**. No publish rights by policy — commands stay on the API Gateway → Gate 1 path. Configure via `apps/console/.env.example` → `.env.local`; DEV-23: one-time `iot attach-policy` per operator identity | ✅ authored |
 | later | SPA on S3 + **CloudFront** in front of API GW; WAF moves to CloudFront (AD-19) | ⏳ |
 
 ### Ingress path (current)
@@ -231,9 +232,14 @@ its DNS name no longer answers from the internet, and API Gateway is the **only*
 public entry point. Each task SG accepts traffic only from the ALB SG; the DB and
 Valkey SGs accept only the task SGs (SEC-04).
 
-> **Console ↔ cloud is NOT wired yet:** the console still talks to localhost
-> services, and Socket.IO/WebSocket does not traverse the HTTP API — live
-> telemetry to the cloud console arrives with the CloudFront/SPA phase.
+> **Console ↔ cloud (M3-4b):** LIVE TELEMETRY now flows to the console straight
+> from IoT Core over WSS — copy `apps/console/.env.example` → `.env.local`,
+> fill it from the terraform outputs, `pnpm dev`, then **Sign in (AWS)** in the
+> header (Cognito Hosted UI + MFA). Read-only by construction: the viewer role
+> cannot publish, so **commands/take-control still need the local services**
+> (wiring `cmdPost` to the API Gateway comes with the CloudFront/SPA phase).
+> DEV-23: after the first sign-in, attach the IoT policy to your identity once
+> (command in `.env.example`).
 
 ### Test the cloud stack
 

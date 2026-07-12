@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { TelemetryPayload, ManeuverProposal, ManeuverProposalStatusUpdate, CheckItem } from '@joppilot/contract';
+import { awsConfig } from '../aws/config';
+import { useCloudTelemetry, CloudState } from '../aws/useCloudTelemetry';
 
 const COMMAND_API = 'http://127.0.0.1:4000';
 const FLEET_API = 'http://127.0.0.1:4002';
@@ -30,6 +32,11 @@ interface SessionValue {
 
   mission: MissionState | null;
   checkItems: CheckItem[];
+
+  // M3-4b cloud mode (live WSS from IoT Core; 'off' when not configured)
+  cloudState: CloudState;
+  cloudSignIn: () => void;
+  cloudSignOut: () => void;
 
   // actions
   takeControl: () => Promise<void>;
@@ -69,8 +76,50 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const proposalTimerRef = useRef<number | null>(null);
   const proposalDeadlineRef = useRef(0);
 
-  // ── Sockets ──
+  // Shared by BOTH telemetry sources (local Socket.IO / cloud IoT WSS).
+  const handleProposal = useCallback((p: ManeuverProposal) => {
+    setActiveProposal(p);
+    setLastProposalResult(null);
+    proposalDeadlineRef.current = Date.now() + p.validityWindowMs;
+    if (proposalTimerRef.current) clearInterval(proposalTimerRef.current);
+    proposalTimerRef.current = window.setInterval(() => {
+      const r = Math.max(0, proposalDeadlineRef.current - Date.now());
+      setProposalTimeLeft(r);
+      if (r <= 0 && proposalTimerRef.current) clearInterval(proposalTimerRef.current);
+    }, 200);
+  }, []);
+
+  const handleProposalStatus = useCallback((u: ManeuverProposalStatusUpdate) => {
+    if (['DECIDED', 'TIMED_OUT', 'CANCELLED'].includes(u.status)) {
+      setActiveProposal(null);
+      if (proposalTimerRef.current) clearInterval(proposalTimerRef.current);
+      setLastProposalResult(
+        u.status === 'TIMED_OUT'
+          ? `Timed out → safe default (${u.selectedOptionId})`
+          : `${u.status} (${u.selectedOptionId ?? 'rejected'})`,
+      );
+      setTimeout(() => setLastProposalResult(null), 8000);
+    }
+  }, []);
+
+  // ── Cloud mode (M3-4b): live WSS straight from IoT Core ──
+  // Active only when apps/console/.env.local carries the VITE_AWS_* values;
+  // read-only by policy — commands still require the local/API command path.
+  const cloud = useCloudTelemetry(awsConfig, vehicleId, {
+    onTelemetry: (p) => setTelemetry(p as TelemetryPayload),
+    onHeartbeat: () => {}, // latch state arrives via telemetry.vehicleState
+    onProposal: (p) => handleProposal(p as ManeuverProposal),
+    onStatus: (u) => handleProposalStatus(u as ManeuverProposalStatusUpdate),
+  });
+
   useEffect(() => {
+    if (!awsConfig) return;
+    setConnection(cloud.state === 'live' ? 'connected' : cloud.state === 'connecting' ? 'connecting' : 'disconnected');
+  }, [cloud.state]);
+
+  // ── Local sockets (skipped entirely in cloud mode) ──
+  useEffect(() => {
+    if (awsConfig) return; // cloud console: telemetry comes over IoT WSS above
     const telSock: Socket = io(TELEMETRY_WS);
     const cmdSock: Socket = io(COMMAND_WS);
     telSock.on('connect', () => setConnection('connected'));
@@ -78,31 +127,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     telSock.on('connect_error', () => setConnection('disconnected'));
     telSock.on(`telemetry/${vehicleId}`, (p: TelemetryPayload) => setTelemetry(p));
 
-    cmdSock.on(`maneuver/proposal/${vehicleId}`, (p: ManeuverProposal) => {
-      setActiveProposal(p);
-      setLastProposalResult(null);
-      proposalDeadlineRef.current = Date.now() + p.validityWindowMs;
-      if (proposalTimerRef.current) clearInterval(proposalTimerRef.current);
-      proposalTimerRef.current = window.setInterval(() => {
-        const r = Math.max(0, proposalDeadlineRef.current - Date.now());
-        setProposalTimeLeft(r);
-        if (r <= 0 && proposalTimerRef.current) clearInterval(proposalTimerRef.current);
-      }, 200);
-    });
-    cmdSock.on(`maneuver/status/${vehicleId}`, (u: ManeuverProposalStatusUpdate) => {
-      if (['DECIDED', 'TIMED_OUT', 'CANCELLED'].includes(u.status)) {
-        setActiveProposal(null);
-        if (proposalTimerRef.current) clearInterval(proposalTimerRef.current);
-        setLastProposalResult(
-          u.status === 'TIMED_OUT'
-            ? `Timed out → safe default (${u.selectedOptionId})`
-            : `${u.status} (${u.selectedOptionId ?? 'rejected'})`,
-        );
-        setTimeout(() => setLastProposalResult(null), 8000);
-      }
-    });
+    cmdSock.on(`maneuver/proposal/${vehicleId}`, handleProposal);
+    cmdSock.on(`maneuver/status/${vehicleId}`, handleProposalStatus);
     return () => { telSock.disconnect(); cmdSock.disconnect(); };
-  }, [vehicleId]);
+  }, [vehicleId, handleProposal, handleProposalStatus]);
 
   // ── Heartbeat (deadman) ──
   useEffect(() => {
@@ -237,6 +265,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     isLatched: telemetry?.vehicleState === 'SAFE_STOPPED',
     activeProposal, proposalTimeLeft, lastProposalResult,
     mission, checkItems,
+    cloudState: cloud.state, cloudSignIn: cloud.signIn, cloudSignOut: cloud.signOut,
     takeControl, cmdPost, estop, decideManeuver,
     createMission, setCheckItem, confirmAndStart, missionAction, dismissMission,
   };
