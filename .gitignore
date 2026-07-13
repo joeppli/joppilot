@@ -59,6 +59,8 @@ target/
 .env.*.local
 !.env.example
 !**/.env.example
+# PC-A vehicle launcher config (filled per machine; vehicle.env.example is committed)
+edge/vehicle.env
 
 # ── Secrets / certificates (e.g. AWS IoT mTLS for the edge) ──
 certs/

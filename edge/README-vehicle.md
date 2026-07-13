@@ -7,17 +7,17 @@ the vehicle's X.509 certificate (mTLS), exactly like a real vehicle.
 
 ## What you receive (once, from the Joppilot operator)
 
-Three files + one hostname:
+- Three certificate files: `veh.cert.pem`, `veh.key.pem`, `veh.ca.pem`
+- A filled **`vehicle.env`** (it carries the IoT endpoint + the cloud signing
+  public key — no secrets). Put it at `edge/vehicle.env`.
 
-- `veh.cert.pem`, `veh.key.pem`, `veh.ca.pem`  — the vehicle certificate bundle
-- `IOT_ENDPOINT` — e.g. `xxxx-ats.iot.eu-central-1.amazonaws.com`
-
-Put the three files in one folder (e.g. `~/joppilot-certs/`).
+Put the three certificate files in one folder and point `CERT_DIR` in
+`vehicle.env` at it (default `./certs`).
 
 ## Prerequisites on this machine
 
 - **CARLA** simulator installed and running (default `localhost:2000`).
-- **Rust** toolchain — `rustup` stable (`curl https://sh.rustup.rs -sSf | sh`).
+- **Rust** toolchain — the script offers to install `rustup` if it is missing.
 - **Python 3** with the `carla` wheel that matches your CARLA version
   (`pip install carla==<your-carla-version>`).
 - This repo checked out (the kernel reads `packages/contract/schemas/*.json`).
@@ -25,15 +25,15 @@ Put the three files in one folder (e.g. `~/joppilot-certs/`).
 ## Run it (one command)
 
 ```bash
-# 1. start CARLA (your usual way), then:
-export IOT_ENDPOINT=xxxx-ats.iot.eu-central-1.amazonaws.com
-export CERT_DIR=~/joppilot-certs
+# 1. put vehicle.env in place and point it at the certs:
+cp edge/vehicle.env.example edge/vehicle.env   # then paste the operator's values
+# 2. start CARLA (your usual way), then:
 ./edge/run-vehicle.sh
 ```
 
-That launches both on-vehicle processes:
-1. the **Rust safety kernel** → connects to AWS IoT Core over mTLS (client id =
-   `VEH-001`), and
+The script checks prerequisites, builds the Rust safety kernel, then starts
+both on-vehicle processes:
+1. the **safety kernel** → connects to AWS IoT Core over mTLS (thing = `VEH-001`)
 2. the **CARLA bridge** → attaches to (or spawns) the Joppilot vehicle in CARLA,
    applies commands, and streams the vehicle's pose back.
 
@@ -42,10 +42,8 @@ to it), so telemetry starts flowing to Joppilot immediately.
 
 ### Test the link WITHOUT CARLA first (optional)
 
-```bash
-export IOT_ENDPOINT=... CERT_DIR=~/joppilot-certs CARLA_MOCK=1
-./edge/run-vehicle.sh          # kinematic mock vehicle — proves the cloud link
-```
+Set `CARLA_MOCK=1` in `vehicle.env` (no CARLA, no `carla` wheel needed) and run
+the same command — a kinematic mock vehicle proves the cloud link end to end.
 
 ## What you should see
 
