@@ -41,6 +41,7 @@ node services/command/test/smoke-drive.cjs      # 16/16 — M3-2 driving path ov
 node services/command/test/smoke-estop.cjs      # 11/11 — M3-3 dual-message E-STOP + command_id dedup (needs command svc + edge)
 node services/command/test/smoke-maneuver.cjs   # 15/15 — ICD §6 proposal flow incl. the APPROVE (CONFIRM) leg
 node services/command/test/smoke-zone.cjs       # 19/19 — permit gate + delivery + M3-5 conditions (validFrom + speed limit on the vehicle)
+node services/command/test/smoke-logsync.cjs    # 6/6  — M3-6 RES-01/02: STOPS+RESTARTS mosquitto; offline latch → ack-confirmed lossless sync + resubscribe
 docker exec joppilot_postgres psql -U joppilot -d joppilot_db \
   -c 'DELETE FROM fleet."Mission"; DELETE FROM fleet."PreDepartureCheck";'   # fleet smoke needs clean tables
 node services/fleet/test/smoke-fleet.cjs        # 25/25 — pre-departure + mission lifecycle + audit rows (needs command svc on 4000)

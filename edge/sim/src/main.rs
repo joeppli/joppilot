@@ -385,6 +385,48 @@ fn now_ms() -> u64 {
 }
 
 // ------------------------------------------------------------------
+// On-vehicle event log + lossless sync (RES-02 / LEG-04, M3-6).
+//
+// Safety-relevant events (latch transitions with their trigger, zone-config
+// applications) are recorded LOCALLY the moment they happen — with ZERO
+// connectivity — and drained to joppilot/v1/vehicles/{id}/logsync once the
+// link returns (QoS1 batches; the cloud dedups on (vehicleId, seq) because
+// delivery is at-least-once). Bounded FIFO (AD-16: the safety kernel never
+// grows unbounded; `dropped` counts what a too-long outage cost). DEV-24:
+// the buffer is in-memory only — a real VEA persists the log across power
+// cycles (LEG-04); sim scope ends at process lifetime.
+// ------------------------------------------------------------------
+const EVENT_LOG_CAP: usize = 10_000;
+
+struct EventLog {
+    // seq restarts at 1 every kernel boot; boot_id disambiguates so the
+    // cloud's dedup key (vehicleId, bootId, seq) survives restarts.
+    boot_id: String,
+    seq: u64,
+    unsynced: VecDeque<Value>,
+    dropped: u64,
+}
+type EventLogStore = Arc<Mutex<EventLog>>;
+
+fn log_event(log: &EventLogStore, vehicle_id: &str, event_type: &str, details: Value) {
+    let mut l = log.lock().unwrap();
+    l.seq += 1;
+    let ev = serde_json::json!({
+        "vehicleId": vehicle_id,
+        "bootId": l.boot_id,
+        "seq": l.seq,
+        "timestamp": now_ms(),
+        "type": event_type,
+        "details": details,
+    });
+    if l.unsynced.len() >= EVENT_LOG_CAP {
+        l.unsynced.pop_front();
+        l.dropped += 1;
+    }
+    l.unsynced.push_back(ev);
+}
+
+// ------------------------------------------------------------------
 // Actuation IPC events (M1-5/M3-1). The kernel is the server on a local
 // TCP socket; the CARLA bridge (sim ADS adapter, NON-safety) connects and
 // receives NDJSON: `command` events only for envelopes that PASSED Gate 2,
@@ -554,7 +596,13 @@ async fn main() {
         mqttoptions.set_transport(Transport::Tls(tls_config));
     }
 
-    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+    // Request-channel capacity 64: while OFFLINE the 10 Hz telemetry loop
+    // fills this channel and then blocks (harmless backpressure) — but any
+    // await on client.* from the task that ALSO polls the eventloop would
+    // deadlock on a full channel (capacity only frees via poll). Headroom
+    // plus the spawn-not-await rule in the ConnAck branch below keep the
+    // reconnect path deadlock-free (M3-6).
+    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 64);
 
     // Leak the id to &'static str (like the former string literal) so the
     // spawned telemetry/heartbeat/proposal tasks can capture it. It is a single
@@ -573,11 +621,16 @@ async fn main() {
     // signed document inside the shadow envelope.
     let zone_config_topic = format!("joppilot/v1/vehicles/{}/zone-config", vehicle_id);
     let shadow_prefix = format!("$aws/things/{}/shadow/name/zone-config", vehicle_id);
+    // Offline event-log upload (RES-02, M3-6): vehicle → cloud, QoS1 batches;
+    // the cloud CONFIRMS receipt on /ack — only then are events discarded.
+    let logsync_topic = format!("joppilot/v1/vehicles/{}/logsync", vehicle_id);
+    let logsync_ack_topic = format!("joppilot/v1/vehicles/{}/logsync/ack", vehicle_id);
 
     client.subscribe(&estop_topic, QoS::AtLeastOnce).await.unwrap();
     client.subscribe(&command_topic, QoS::AtLeastOnce).await.unwrap();
     client.subscribe(&deadman_topic, QoS::AtLeastOnce).await.unwrap();
     client.subscribe(&zone_config_topic, QoS::AtLeastOnce).await.unwrap();
+    client.subscribe(&logsync_ack_topic, QoS::AtLeastOnce).await.unwrap();
     if is_aws {
         client.subscribe(format!("{}/update/delta", shadow_prefix), QoS::AtLeastOnce).await.unwrap();
         client.subscribe(format!("{}/get/accepted", shadow_prefix), QoS::AtLeastOnce).await.unwrap();
@@ -620,6 +673,21 @@ async fn main() {
     let external_pose = Arc::new(Mutex::new(false));
     // When the last pose arrived — feeds the pose-staleness watchdog below.
     let last_pose_time = Arc::new(Mutex::new(0u64));
+    // On-vehicle event log (RES-02/LEG-04, M3-6): recorded locally at the
+    // moment of the event — zero-connectivity safe — drained by the sync task.
+    let event_log: EventLogStore = Arc::new(Mutex::new(EventLog {
+        boot_id: Uuid::new_v4().to_string()[..8].to_string(),
+        seq: 0,
+        unsynced: VecDeque::new(),
+        dropped: 0,
+    }));
+    // Broker link state, maintained by the main event loop (ConnAck / poll
+    // error). Gates the log-sync drain: publishing into a dead link would
+    // just pile batches into rumqttc's bounded request channel.
+    let broker_connected = Arc::new(Mutex::new(false));
+    // In-flight log-sync batch: (highest seq published, sent_at ms). Events
+    // leave the buffer ONLY on cloud ack; an unacked batch retries after 5 s.
+    let sync_outstanding: Arc<Mutex<Option<(u64, u64)>>> = Arc::new(Mutex::new(None));
 
     // -------------------- Actuation IPC server (M3-1, B-boundary stand-in) --------
     // Verified-commands-out / pose-in channel for the CARLA bridge. Losing the
@@ -709,6 +777,7 @@ async fn main() {
         let watchdog_latch = latched.clone();
         let watchdog_armed_c = watchdog_armed.clone();
         let act_for_watchdog = actuation_tx.clone();
+        let log_for_watchdog = event_log.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(1));
             loop {
@@ -724,6 +793,10 @@ async fn main() {
                         // The bridge must brake on this even with zero cloud
                         // connectivity — the latch travels over local IPC.
                         let _ = act_for_watchdog.send(state_event(true));
+                        // RES-02: recorded LOCALLY — this exact event happens
+                        // while the cloud is unreachable and must survive to sync.
+                        log_event(&log_for_watchdog, vehicle_id, "LATCH_ENGAGED",
+                            serde_json::json!({ "trigger": "WATCHDOG", "silentMs": now - last }));
                         println!("⚠️ LOCAL WATCHDOG TRIGGERED! Cloud silent >3s → latched SAFE-STOP (local, zero connectivity).");
                     }
                 }
@@ -747,6 +820,7 @@ async fn main() {
         let ext = external_pose.clone();
         let latch = latched.clone();
         let act = actuation_tx.clone();
+        let log_for_pose = event_log.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(1));
             loop {
@@ -761,6 +835,8 @@ async fn main() {
                         // If the bridge reconnects it converges on this latch
                         // via the connect snapshot and brakes.
                         let _ = act.send(state_event(true));
+                        log_event(&log_for_pose, vehicle_id, "LATCH_ENGAGED",
+                            serde_json::json!({ "trigger": "POSE_SILENCE" }));
                         println!("⚠️ POSE FEED SILENT >3s! Ground truth lost → latched SAFE-STOP (fail-closed).");
                     }
                 }
@@ -778,6 +854,7 @@ async fn main() {
         let speed_for_telemetry = speed_state.clone();
         let ext_for_telemetry = external_pose.clone();
         let act_for_telemetry = actuation_tx.clone();
+        let log_for_telemetry = event_log.clone();
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(100));
             let mut speed = 10.0;
@@ -834,6 +911,8 @@ async fn main() {
                     }
                     // Local IPC latch → the bridge brakes the sim vehicle.
                     let _ = act_for_telemetry.send(state_event(true));
+                    log_event(&log_for_telemetry, vehicle_id, "LATCH_ENGAGED",
+                        serde_json::json!({ "trigger": "GEOFENCE", "lat": lat, "lng": lng }));
                     println!("⚠️ GEOFENCE VIOLATION at ({:.4},{:.4}) → latched SAFE-STOP (RES-03).", lat, lng);
                     true
                 } else {
@@ -902,6 +981,48 @@ async fn main() {
                 };
                 let json = serde_json::to_string(&hb).unwrap();
                 client_clone.publish(&hb_topic, QoS::AtLeastOnce, false, json).await.unwrap();
+            }
+        });
+    }
+
+    // -------------------- Event-log sync drain (RES-02, M3-6) --------------------
+    // 1 Hz, ACK-CONFIRMED: events leave the on-vehicle buffer ONLY once the
+    // cloud confirms them on .../logsync/ack. QoS1 to the broker alone is
+    // NOT "lossless" — the broker can accept a batch while the consuming
+    // service is still reconnecting and the events would evaporate (the
+    // M3-6 smoke, which kills the whole broker, caught exactly that). An
+    // unacked batch retries every 5 s; the cloud dedups on (vehicleId, seq),
+    // so at-least-once delivery is safe.
+    {
+        let client_clone = client.clone();
+        let log = event_log.clone();
+        let connected = broker_connected.clone();
+        let topic = logsync_topic.clone();
+        let outstanding = sync_outstanding.clone();
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                if !*connected.lock().unwrap() { continue; }
+                // Leave an in-flight batch alone for 5 s before retrying.
+                if let Some((_, sent_at)) = *outstanding.lock().unwrap() {
+                    if now_ms() < sent_at + 5000 { continue; }
+                }
+                let batch: Vec<Value> = {
+                    let l = log.lock().unwrap();
+                    l.unsynced.iter().take(100).cloned().collect()
+                };
+                if batch.is_empty() {
+                    *outstanding.lock().unwrap() = None; // fully acked backlog
+                    continue;
+                }
+                let up_to = batch.last().and_then(|e| e.get("seq")).and_then(|s| s.as_u64()).unwrap_or(0);
+                let count = batch.len();
+                let payload = serde_json::json!({ "vehicleId": vehicle_id, "events": batch });
+                if client_clone.publish(&topic, QoS::AtLeastOnce, false, payload.to_string()).await.is_ok() {
+                    *outstanding.lock().unwrap() = Some((up_to, now_ms()));
+                    println!("📤 LOG SYNC: published {} event(s) up to seq {} — awaiting cloud ack (RES-02).", count, up_to);
+                }
             }
         });
     }
@@ -1029,13 +1150,78 @@ async fn main() {
 
     // -------------------- Command ingest / 2nd gate (authoritative) --------------------
     loop {
-        if let Ok(Event::Incoming(Incoming::Publish(p))) = eventloop.poll().await {
+        let event = match eventloop.poll().await {
+            Ok(ev) => ev,
+            Err(e) => {
+                // Link down. rumqttc reconnects on the next poll; gate the
+                // log-sync drain off and don't spin the loop hot meanwhile.
+                if *broker_connected.lock().unwrap() {
+                    eprintln!("🔌 MQTT link lost ({}). Reconnecting; events buffer locally (RES-02).", e);
+                }
+                *broker_connected.lock().unwrap() = false;
+                time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+        };
+
+        // (Re)connect: rumqttc does NOT restore subscriptions after a
+        // reconnect (clean session) — without this the vehicle goes DEAF to
+        // commands after the first link drop (M3-6 reconnect correctness).
+        //
+        // SPAWNED, never awaited here: after an offline stretch the request
+        // channel is FULL of backlogged telemetry, and capacity only frees
+        // when THIS task keeps polling the eventloop — awaiting subscribe
+        // from this task deadlocks the whole kernel (found the hard way in
+        // the M3-6 smoke: CLOSE-WAIT socket, reconnect never completing).
+        if let Event::Incoming(Incoming::ConnAck(_)) = &event {
+            *broker_connected.lock().unwrap() = true;
+            let c = client.clone();
+            let (t_estop, t_cmd, t_dead, t_zone) = (estop_topic.clone(), command_topic.clone(), deadman_topic.clone(), zone_config_topic.clone());
+            let t_ack = logsync_ack_topic.clone();
+            let shadow = shadow_prefix.clone();
+            tokio::spawn(async move {
+                let _ = c.subscribe(&t_estop, QoS::AtLeastOnce).await;
+                let _ = c.subscribe(&t_cmd, QoS::AtLeastOnce).await;
+                let _ = c.subscribe(&t_dead, QoS::AtLeastOnce).await;
+                let _ = c.subscribe(&t_zone, QoS::AtLeastOnce).await;
+                let _ = c.subscribe(&t_ack, QoS::AtLeastOnce).await;
+                if is_aws {
+                    let _ = c.subscribe(format!("{}/update/delta", shadow), QoS::AtLeastOnce).await;
+                    let _ = c.subscribe(format!("{}/get/accepted", shadow), QoS::AtLeastOnce).await;
+                    // A zone change set while we were offline still lands.
+                    let _ = c.publish(format!("{}/get", shadow), QoS::AtLeastOnce, false, "{}").await;
+                }
+                println!("🔌 MQTT (re)connected — subscriptions restored; buffered log sync will drain (RES-02).");
+            });
+            continue;
+        }
+
+        let Event::Incoming(Incoming::Publish(p)) = event else { continue };
+        {
             // Any inbound message proves the cloud is alive → reset & arm the watchdog.
             *last_contact_time.lock().unwrap() = now_ms();
             *watchdog_armed.lock().unwrap() = true;
 
             // The deadman topic is just a liveness ping; nothing to validate.
             if p.topic == deadman_topic {
+                continue;
+            }
+
+            // Log-sync ack (RES-02): the cloud confirmed events up to `upTo` —
+            // NOW they may leave the on-vehicle buffer (lossless handshake).
+            if p.topic == logsync_ack_topic {
+                if let Ok(v) = serde_json::from_slice::<Value>(&p.payload) {
+                    if let Some(up_to) = v.get("upTo").and_then(|x| x.as_u64()) {
+                        let mut l = event_log.lock().unwrap();
+                        while l.unsynced.front().and_then(|e| e.get("seq")).and_then(|s| s.as_u64()).map(|s| s <= up_to).unwrap_or(false) {
+                            l.unsynced.pop_front();
+                        }
+                        drop(l);
+                        let mut o = sync_outstanding.lock().unwrap();
+                        if o.map(|(sent, _)| sent <= up_to).unwrap_or(false) { *o = None; }
+                        println!("✅ LOG SYNC ACK: cloud confirmed events up to seq {} (RES-02).", up_to);
+                    }
+                }
                 continue;
             }
 
@@ -1081,6 +1267,8 @@ async fn main() {
                 }
                 *zs = ZoneState { zone: zone.clone(), permit_valid_until, permit_valid_from, permit_speed_limit, revision };
                 drop(zs);
+                log_event(&event_log, vehicle_id, "ZONE_CONFIG_APPLIED",
+                    serde_json::json!({ "zone": zone, "revision": revision }));
                 println!("🗺️  ZONE-CONFIG APPLIED: zone='{}' window=({:?}..{:?}) speed_limit={:?} revision={} (signed, ICD §1).",
                     zone, permit_valid_from, permit_valid_until, permit_speed_limit, revision);
 
@@ -1203,6 +1391,8 @@ async fn main() {
                 let _ = actuation_tx.send(state_event(true));
                 let _ = actuation_tx.send(command_event(&cid, if is_estop { "E_STOP" } else { "SAFE_STOP" }, &envelope.payload));
                 let tag = if is_estop { "🚨 E-STOP" } else { "🛑 SAFE-STOP" };
+                log_event(&event_log, vehicle_id, "LATCH_ENGAGED",
+                    serde_json::json!({ "trigger": if is_estop { "E_STOP" } else { "SAFE_STOP" }, "commandId": cid }));
                 println!("{} APPLIED → latched. ID: {}", tag, cid);
                 let ack = ack_json(&cid, "ACK", None);
                 remember_ack(&seen_commands, &cid, &ack);
@@ -1235,6 +1425,8 @@ async fn main() {
                         drop(l);
                         let _ = actuation_tx.send(state_event(false));
                         let _ = actuation_tx.send(command_event(&cid, "CLEAR_SAFE_STOP", &envelope.payload));
+                        log_event(&event_log, vehicle_id, "LATCH_RELEASED",
+                            serde_json::json!({ "commandId": cid }));
                         println!("🔓 SAFE-STOP latch released by authorized CLEAR_SAFE_STOP. ID: {}", cid);
                         let ack = ack_json(&cid, "ACK", None);
                         remember_ack(&seen_commands, &cid, &ack);
@@ -1266,6 +1458,8 @@ async fn main() {
                 // Outside the approved zone → refuse and latch a safe-stop (ICD §1/§9).
                 *latched.lock().unwrap() = true;
                 let _ = actuation_tx.send(state_event(true));
+                log_event(&event_log, vehicle_id, "LATCH_ENGAGED",
+                    serde_json::json!({ "trigger": "GEOFENCE", "lat": lat, "lng": lng, "commandId": cid }));
                 println!("⛔ COMMAND REJECTED! Outside approved zone ({:.4},{:.4}) → latched SAFE-STOP. ID: {}", lat, lng, cid);
                 let ack = ack_json(&cid, "REJECTED", Some("GEOFENCE_VIOLATION"));
                 remember_ack(&seen_commands, &cid, &ack);

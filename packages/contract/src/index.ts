@@ -435,8 +435,34 @@ export const HeartbeatSchema = z.object({
 });
 
 // ------------------------------------------------------------------
-// ACK / NACK
+// EDGE EVENT LOG SYNC (RES-02 / LEG-04, M3-6)
+// The vehicle records safety-relevant events LOCALLY (works with zero
+// connectivity) and uploads them losslessly once the link returns:
+// vehicle → joppilot/v1/vehicles/{id}/logsync (QoS1 batches). `seq` is
+// strictly monotonic per vehicle boot — the cloud dedups on (vehicleId,
+// seq) since QoS1 is at-least-once, and can flag gaps.
 // ------------------------------------------------------------------
+export const EdgeLogEventTypeSchema = z.enum([
+  'LATCH_ENGAGED',    // details.trigger: WATCHDOG | GEOFENCE | POSE_SILENCE | E_STOP | SAFE_STOP
+  'LATCH_RELEASED',   // authorized CLEAR_SAFE_STOP (ICD §9)
+  'ZONE_CONFIG_APPLIED',
+]);
+
+export const EdgeLogEventSchema = z.object({
+  vehicleId: z.string().min(1),
+  // seq restarts at 1 on every kernel boot — bootId disambiguates, so the
+  // cloud dedup key (vehicleId, bootId, seq) survives restarts.
+  bootId: z.string().min(1),
+  seq: z.number().int().nonnegative(),
+  timestamp: z.number().int().positive(), // ms, VEHICLE clock at event time
+  type: EdgeLogEventTypeSchema,
+  details: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const EdgeLogBatchSchema = z.object({
+  vehicleId: z.string().min(1),
+  events: z.array(EdgeLogEventSchema).min(1).max(100),
+});
 export const AckStatusSchema = z.enum(['ACK', 'REJECTED', 'ERROR']);
 export const RejectReasonSchema = z.enum([
   'UNAUTHORIZED',
@@ -485,3 +511,5 @@ export type MissionStatus = z.infer<typeof MissionStatusSchema>;
 export type Mission = z.infer<typeof MissionSchema>;
 export type ZonePermitConfig = z.infer<typeof ZonePermitConfigSchema>;
 export type ZoneConfig = z.infer<typeof ZoneConfigSchema>;
+export type EdgeLogEvent = z.infer<typeof EdgeLogEventSchema>;
+export type EdgeLogBatch = z.infer<typeof EdgeLogBatchSchema>;

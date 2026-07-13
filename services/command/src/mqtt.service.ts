@@ -2,7 +2,7 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/commo
 import * as mqtt from 'mqtt';
 import * as fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { HeartbeatSchema } from '@joppilot/contract';
+import { HeartbeatSchema, EdgeLogBatchSchema } from '@joppilot/contract';
 import { PrismaService } from './prisma.service';
 
 @Injectable()
@@ -72,6 +72,12 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       this.client.subscribe('joppilot/v1/vehicles/+/heartbeat', (err) => {
         if (!err) this.logger.log('Subscribed to heartbeats (latch EDR)');
       });
+      // M3-6 (RES-02): the vehicle's OWN event log, recorded offline and
+      // uploaded losslessly on reconnect — appended to the EDR as the
+      // authoritative on-vehicle record (LEG-04).
+      this.client.subscribe('joppilot/v1/vehicles/+/logsync', (err) => {
+        if (!err) this.logger.log('Subscribed to edge log sync (RES-02)');
+      });
     });
 
     this.client.on('message', async (topic, message) => {
@@ -103,6 +109,8 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
           // fire-and-forget would turn it into a process-killing unhandled
           // rejection (untrusted network input must never crash the service).
           await this.recordLatchTransition(message);
+        } else if (topic.endsWith('/logsync')) {
+          await this.recordEdgeLogBatch(message);
         } else if (topic.includes('/maneuver/') && this.maneuverHandler) {
           this.maneuverHandler(topic, message);
         }
@@ -161,6 +169,60 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       },
     });
     this.logger.warn(`SAFE_STOP_LATCH ${latched ? 'ENGAGED' : 'RELEASED'} recorded for ${hb.vehicleId} (RES-04)`);
+  }
+
+  /**
+   * RES-02 / LEG-04 (M3-6): append the vehicle's own offline-recorded events
+   * to the EDR. The batch arrives over QoS1 (at-least-once), so each event is
+   * DEDUPED on its vehicle-assigned identity `vlog-{vehicleId}-{seq}` — a
+   * redelivered batch adds nothing. The event's `timestamp` is the VEHICLE
+   * clock at the moment it happened (possibly long before sync), which is
+   * exactly what the chain of evidence needs (time-synced recording, LEG-04).
+   */
+  private async recordEdgeLogBatch(message: Buffer) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(message.toString());
+    } catch {
+      return; // non-JSON: drop, never throw
+    }
+    const parsed = EdgeLogBatchSchema.safeParse(raw);
+    if (!parsed.success) {
+      this.logger.warn(`Dropped malformed edge log batch: ${parsed.error.issues[0]?.message ?? 'schema error'}`);
+      return;
+    }
+    const batch = parsed.data;
+    let appended = 0;
+    for (const ev of batch.events) {
+      const vlogId = `vlog-${ev.vehicleId}-${ev.bootId}-${ev.seq}`;
+      const existing = await this.prisma.eventDataRecord.findFirst({ where: { commandId: vlogId } });
+      if (existing) continue; // QoS1 redelivery — already evidenced
+      await this.prisma.eventDataRecord.create({
+        data: {
+          commandId: vlogId,
+          correlationId: uuidv4(),
+          vehicleId: ev.vehicleId,
+          issuer: 'VEHICLE-LOG',
+          action: ev.type,
+          status: 'SYNCED',
+          details: {
+            vehicleTimestamp: ev.timestamp,
+            syncedAt: Date.now(),
+            ...(ev.details ?? {}),
+          },
+        },
+      });
+      appended++;
+    }
+    if (appended > 0) {
+      this.logger.log(`Edge log sync: appended ${appended}/${batch.events.length} event(s) from ${batch.vehicleId} (RES-02).`);
+    }
+    // Lossless handshake: confirm receipt so the vehicle may discard the
+    // batch from its buffer. Acked AFTER the EDR writes above — an ack for
+    // unpersisted events would reintroduce the loss window. Duplicates
+    // (QoS1 redelivery / retry) are acked too: they are already evidenced.
+    const upTo = Math.max(...batch.events.map((e) => e.seq));
+    this.publish(`joppilot/v1/vehicles/${batch.vehicleId}/logsync/ack`, { vehicleId: batch.vehicleId, upTo });
   }
 
   /**
