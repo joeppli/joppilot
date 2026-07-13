@@ -41,6 +41,20 @@ resource "aws_apigatewayv2_vpc_link" "this" {
 resource "aws_apigatewayv2_api" "this" {
   name          = "${var.name_prefix}-http-api"
   protocol_type = "HTTP"
+
+  # Browser CORS (M3-4c): the operator console is a cross-origin SPA that calls
+  # the command/maneuver/fleet routes with a Cognito Bearer token. HTTP APIs
+  # answer the preflight OPTIONS themselves (the JWT authorizer is NOT invoked
+  # for preflight), so the console can send Authorization on the real request.
+  # allow_credentials stays false — auth rides in the header, not cookies.
+  # Origins are passed in (dev: http://localhost:3000; add the CloudFront domain
+  # when the SPA is hosted — AD-19). No CORS is emitted when the list is empty.
+  cors_configuration {
+    allow_origins = var.cors_allow_origins
+    allow_methods = ["GET", "POST", "OPTIONS"]
+    allow_headers = ["authorization", "content-type"]
+    max_age       = 300
+  }
 }
 
 resource "aws_apigatewayv2_authorizer" "cognito" {

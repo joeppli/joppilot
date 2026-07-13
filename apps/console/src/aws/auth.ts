@@ -87,6 +87,28 @@ export async function completeLoginIfRedirected(cfg: AwsConfig): Promise<Tokens 
   return tokens;
 }
 
+/**
+ * The signed-in operator's Cognito username from the ID token (M3-4c). The
+ * cloud command service runs with identity binding (AUTH_TRUST_APIGW_JWT=true),
+ * so the console must send this as `operatorId` — the body id MUST equal the
+ * token identity or the call gets 403 IDENTITY_MISMATCH (LEG-05). Not
+ * signature-verified here (the API Gateway authorizer already verified the
+ * token at the edge); we only READ the username to fill the body.
+ */
+export function getUsername(): string | null {
+  const t = getTokens();
+  if (!t) return null;
+  try {
+    const part = t.idToken.split('.')[1];
+    const json = atob(part.replace(/-/g, '+').replace(/_/g, '/').padEnd(part.length + ((4 - (part.length % 4)) % 4), '='));
+    const p = JSON.parse(json) as Record<string, unknown>;
+    const id = p['cognito:username'] ?? p['email'] ?? p['sub'];
+    return typeof id === 'string' ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getTokens(): Tokens | null {
   try {
     const raw = sessionStorage.getItem(TOKENS_KEY);

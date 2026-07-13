@@ -32,3 +32,9 @@ variable "cognito_client_id" {
   description = "Cognito app-client id — the JWT authorizer validates it as the token audience."
   type        = string
 }
+
+variable "cors_allow_origins" {
+  description = "Browser origins allowed to call the API with CORS (the operator console SPA). Dev: [\"http://localhost:3000\"]; add the CloudFront domain when the SPA is hosted. Empty = no CORS."
+  type        = list(string)
+  default     = []
+}
