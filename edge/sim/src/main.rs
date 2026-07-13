@@ -832,6 +832,14 @@ async fn main() {
                     current_zone: zone,
                 };
 
+                // Diagnostic tap (EDGE_DEBUG_TELEMETRY=1): 1 Hz echo of what
+                // actually leaves the vehicle. Proven in the M3-4b
+                // duplicate-publisher hunt — the ground truth for "what is
+                // this vehicle broadcasting" without any cloud-side tooling.
+                if tick_count % 10 == 0 && env::var("EDGE_DEBUG_TELEMETRY").is_ok() {
+                    println!("[telemetry] lat={:.6} lng={:.6} speed={:.1} state={} latched={}",
+                        payload.location.lat, payload.location.lng, payload.speed_kmh, payload.vehicle_state, is_latched);
+                }
                 let json = serde_json::to_string(&payload).unwrap();
                 client_clone.publish(&telemetry_topic_clone, QoS::AtMostOnce, false, json).await.unwrap();
             }
