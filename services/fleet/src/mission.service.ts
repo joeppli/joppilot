@@ -2,6 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { MissionStatus } from '@joppilot/contract';
 
+// LEG-03 / OAD: the pre-departure check is mandatory before EVERY operation.
+// A checklist confirmed long ago no longer evidences the vehicle's CURRENT
+// state, so mission start refuses a stale confirmation and the operator must
+// re-run the check. Tunable via CHECKLIST_MAX_AGE_MS; the concrete value is a
+// pilot/authority parameter (LEG-06) — 30 min is a conservative default.
+const CHECKLIST_MAX_AGE_MS = Number(process.env.CHECKLIST_MAX_AGE_MS) || 30 * 60 * 1000;
+
 @Injectable()
 export class MissionService {
   private readonly logger = new Logger(MissionService.name);
@@ -62,6 +69,16 @@ export class MissionService {
     // silently skips the legally mandatory check.
     if (!mission.checklist || mission.checklist.status !== 'CONFIRMED') {
       throw new Error('Cannot start: pre-departure check not confirmed');
+    }
+
+    // LEG-03: the check must be RECENT — a confirmation from hours ago no
+    // longer evidences the vehicle's current state. A stale checklist blocks
+    // start (fail-closed) and the operator re-runs the check.
+    const confirmedAt = mission.checklist.confirmedAt?.getTime();
+    if (!confirmedAt || Date.now() - confirmedAt > CHECKLIST_MAX_AGE_MS) {
+      throw new Error(
+        `Cannot start: pre-departure check is stale (confirmed > ${Math.round(CHECKLIST_MAX_AGE_MS / 60000)} min ago) — re-run the check (LEG-03).`,
+      );
     }
 
     await this.prisma.$transaction(async (tx) => {
