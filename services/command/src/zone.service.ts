@@ -11,6 +11,10 @@ export interface ZonePermit {
   // Permit validity window. The zone is only honoured while current; past the
   // window it falls back to the safe default (public_approved_route).
   validUntil?: number;
+  // M3-5 (ICD §1 conditions): window start — before it the permissive zone is
+  // NOT yet active — and the permit's speed limit, enforced on the vehicle.
+  validFrom?: number;
+  speedLimitKmh?: number;
 }
 
 interface ZoneRecord {
@@ -62,6 +66,11 @@ export class ZoneService {
     if (rec.permit?.validUntil && Date.now() > rec.permit.validUntil) {
       return 'public_approved_route';
     }
+    // M3-5: before validFrom the permissive zone is not yet active — Gate 1
+    // reads the safe default (the edge enforces the same rule autonomously).
+    if (rec.permit?.validFrom && Date.now() < rec.permit.validFrom) {
+      return 'public_approved_route';
+    }
     return rec.zone;
   }
 
@@ -92,8 +101,15 @@ export class ZoneService {
     const config: ZoneConfig = this.signing.signDocument({
       vehicleId,
       zone: rec.zone,
+      // M3-5: the FULL permit condition set rides in the signed document —
+      // validFrom + speedLimitKmh are enforced on the vehicle (ICD §1).
       permit: rec.permit?.validUntil
-        ? { permitId: rec.permit.permitId, validUntil: rec.permit.validUntil }
+        ? {
+            permitId: rec.permit.permitId,
+            validUntil: rec.permit.validUntil,
+            ...(rec.permit.validFrom ? { validFrom: rec.permit.validFrom } : {}),
+            ...(rec.permit.speedLimitKmh ? { speedLimitKmh: rec.permit.speedLimitKmh } : {}),
+          }
         : undefined,
       issuedAt: Date.now(),
       revision,

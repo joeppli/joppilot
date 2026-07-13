@@ -212,6 +212,11 @@ struct CommandEnvelope {
 struct ZoneState {
     zone: String,
     permit_valid_until: Option<u64>,
+    // M3-5 (ICD §1 permit conditions), both enforced ON THE VEHICLE:
+    // before valid_from the permissive zone is NOT yet active, and the
+    // permit's speed limit caps Mode 2 driving while the zone is active.
+    permit_valid_from: Option<u64>,
+    permit_speed_limit: Option<f32>,
     revision: u64,
 }
 
@@ -224,14 +229,26 @@ fn is_in_approved_territory(lat: f64, lng: f64) -> bool {
 }
 
 /// The configured zone type with the permit window enforced on-vehicle:
-/// an expired permit can never keep a permissive zone alive (ICD §1).
+/// an expired permit can never keep a permissive zone alive, and a permit
+/// whose window has not yet OPENED does not activate it either (ICD §1, M3-5).
 fn current_zone_type(zs: &ZoneState) -> String {
     if let Some(valid_until) = zs.permit_valid_until {
         if now_ms() > valid_until {
             return "public_approved_route".to_string();
         }
     }
+    if let Some(valid_from) = zs.permit_valid_from {
+        if now_ms() < valid_from {
+            return "public_approved_route".to_string();
+        }
+    }
     zs.zone.clone()
+}
+
+/// The permit's speed limit, but only while the permit zone is ACTIVE —
+/// outside the window the vehicle sits on the safe default anyway (M3-5).
+fn active_permit_speed_limit(zs: &ZoneState) -> Option<f32> {
+    if current_zone_type(zs) == zs.zone { zs.permit_speed_limit } else { None }
 }
 
 fn effective_zone(lat: f64, lng: f64, zs: &ZoneState) -> String {
@@ -576,6 +593,8 @@ async fn main() {
     let zone_state = Arc::new(Mutex::new(ZoneState {
         zone: initial_zone,
         permit_valid_until: None,
+        permit_valid_from: None,
+        permit_speed_limit: None,
         revision: 0,
     }));
     // Safe-stop latch (RES-04). Once engaged it stays engaged across reconnects;
@@ -780,6 +799,13 @@ async fn main() {
                         speed = if speed > 25.0 { 10.0 } else { speed + 1.0 };
                     }
                     if is_latched { speed = 0.0; }
+                    // M3-5 (ICD §1): the active permit's speed limit caps the
+                    // vehicle's road speed — enforced HERE, on the vehicle,
+                    // from the signed zone-config (a real VEA would govern the
+                    // drivetrain; the sim clamps its motion model).
+                    if let Some(limit) = active_permit_speed_limit(&zone_for_telemetry.lock().unwrap().clone()) {
+                        if speed > limit { speed = limit; }
+                    }
                     *speed_for_telemetry.lock().unwrap() = speed;
                 }
 
@@ -1045,15 +1071,18 @@ async fn main() {
                 let revision = doc.get("revision").and_then(|v| v.as_u64()).unwrap_or(0);
                 let zone = doc.get("zone").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let permit_valid_until = doc.pointer("/permit/validUntil").and_then(|v| v.as_u64());
+                // M3-5: full permit condition set (ICD §1) — enforced here.
+                let permit_valid_from = doc.pointer("/permit/validFrom").and_then(|v| v.as_u64());
+                let permit_speed_limit = doc.pointer("/permit/speedLimitKmh").and_then(|v| v.as_f64()).map(|v| v as f32);
                 let mut zs = zone_state.lock().unwrap();
                 if revision <= zs.revision {
                     println!("⛔ ZONE-CONFIG IGNORED: revision {} <= current {} (anti-replay, fail-safe).", revision, zs.revision);
                     continue;
                 }
-                *zs = ZoneState { zone: zone.clone(), permit_valid_until, revision };
+                *zs = ZoneState { zone: zone.clone(), permit_valid_until, permit_valid_from, permit_speed_limit, revision };
                 drop(zs);
-                println!("🗺️  ZONE-CONFIG APPLIED: zone='{}' permit_valid_until={:?} revision={} (signed, ICD §1).",
-                    zone, permit_valid_until, revision);
+                println!("🗺️  ZONE-CONFIG APPLIED: zone='{}' window=({:?}..{:?}) speed_limit={:?} revision={} (signed, ICD §1).",
+                    zone, permit_valid_from, permit_valid_until, permit_speed_limit, revision);
 
                 // audit-8: report the applied config back so the Device Shadow
                 // CONVERGES (desired == reported → no perpetual delta, and an
@@ -1251,6 +1280,25 @@ async fn main() {
                 remember_ack(&seen_commands, &cid, &ack);
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                 continue;
+            }
+
+            // 6a) Permit speed limit (PERMIT_SPEED_LIMIT, ICD §1 — M3-5).
+            // A Mode 2 command that names a target speed above the active
+            // permit's limit is refused ON THE VEHICLE; the limit rides in
+            // the signed zone-config, so a spoofed/buggy cloud cannot lift it.
+            // (CREEP is the only cataloged command carrying an explicit speed;
+            // DRIVE throttle% is capped by the sim's road-speed clamp instead.)
+            if let Some(limit) = active_permit_speed_limit(&zone_state.lock().unwrap().clone()) {
+                if action == "CREEP" {
+                    let requested = envelope.payload.get("speedKmh").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                    if requested > limit {
+                        println!("⛔ COMMAND REJECTED! CREEP {} km/h exceeds permit speed limit {} km/h. ID: {}", requested, limit, cid);
+                        let ack = ack_json(&cid, "REJECTED", Some("PERMIT_SPEED_LIMIT"));
+                        remember_ack(&seen_commands, &cid, &ack);
+                        client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                        continue;
+                    }
+                }
             }
 
             // 6b) Disruptive diagnostics deferred unless in a safe state (ICD §1 footnote).

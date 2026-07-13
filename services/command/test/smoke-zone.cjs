@@ -151,6 +151,67 @@ function httpPost(path, body, role = 'admin') {
   const creepAck = creep.body?.commandId ? await waitAck(creep.body.commandId) : undefined;
   assert('mode2 ACCEPTED on vehicle after depot config (DEV-8)', creepAck?.status === 'ACK', JSON.stringify({ creep: creep.body, ack: creepAck }));
 
+  // ---- M3-5: permit CONDITIONS enforced on the vehicle (ICD §1) ----
+
+  // 9a. A window that never opens is a broken permit (cloud-side sanity).
+  const badWindow = await httpPost(zonePath, {
+    zone: 'public_test_permit', permitId: 'GL-2026-042',
+    validFrom: Date.now() + 3600_000, validUntil: Date.now() + 1000,
+  });
+  assert('validFrom >= validUntil rejected (PERMIT_WINDOW_INVALID)',
+    badWindow.status === 403 && badWindow.body?.reason === 'PERMIT_WINDOW_INVALID', JSON.stringify(badWindow.body));
+
+  // 9b. Permit speed limit: depot with speedLimitKmh=3 → a CREEP asking 5
+  // km/h must be refused ON THE VEHICLE (PERMIT_SPEED_LIMIT), while 2 km/h
+  // passes. The limit rides in the SIGNED zone-config — Gate 1 has no speed
+  // gate; this is pure Gate-2 enforcement.
+  const limited = await httpPost(`/api/command/${EV}/zone`, {
+    zone: 'depot', permitId: 'SITE-DEPOT-GL-01',
+    validUntil: Date.now() + 3600_000, speedLimitKmh: 3,
+  });
+  assert('speed-limited depot delivered', limited.status === 201 && limited.body?.delivered === true, JSON.stringify(limited.body));
+  await wait(400);
+  await httpPost(`/api/command/${EV}/heartbeat`, { operatorId: OP, token }, 'operator');
+  const fast = await httpPost(`/api/command/${EV}/command`, { operatorId: OP, token, payload: { action: 'CREEP', speedKmh: 5 } }, 'operator');
+  const fastAck = fast.body?.commandId ? await waitAck(fast.body.commandId) : undefined;
+  assert('CREEP above permit limit NACKed on vehicle (PERMIT_SPEED_LIMIT)',
+    fastAck?.status === 'REJECTED' && fastAck?.reason === 'PERMIT_SPEED_LIMIT', JSON.stringify({ fast: fast.body, ack: fastAck }));
+  await httpPost(`/api/command/${EV}/heartbeat`, { operatorId: OP, token }, 'operator');
+  const slow = await httpPost(`/api/command/${EV}/command`, { operatorId: OP, token, payload: { action: 'CREEP', speedKmh: 2 } }, 'operator');
+  const slowAck = slow.body?.commandId ? await waitAck(slow.body.commandId) : undefined;
+  assert('CREEP under permit limit ACKed', slowAck?.status === 'ACK', JSON.stringify({ slow: slow.body, ack: slowAck }));
+
+  // 9c. validFrom in the future: the permissive zone is NOT YET ACTIVE.
+  // Cloud Gate 1 reads the safe default (403 before publish)…
+  const notYet = await httpPost(`/api/command/${EV}/zone`, {
+    zone: 'depot', permitId: 'SITE-DEPOT-GL-01',
+    validFrom: Date.now() + 3600_000, validUntil: Date.now() + 7200_000,
+  });
+  assert('future-validFrom depot delivered', notYet.status === 201 && notYet.body?.delivered === true, JSON.stringify(notYet.body));
+  await wait(400);
+  await httpPost(`/api/command/${EV}/heartbeat`, { operatorId: OP, token }, 'operator');
+  const early = await httpPost(`/api/command/${EV}/command`, { operatorId: OP, token, payload: { action: 'CREEP', speedKmh: 2 } }, 'operator');
+  assert('Gate 1 refuses Mode 2 before validFrom (MODE_MISMATCH)',
+    early.status === 403 && early.body?.reason === 'MODE_MISMATCH', JSON.stringify(early.body));
+
+  // …and the VEHICLE refuses it AUTHORITATIVELY too: a signed envelope
+  // straight onto the command topic (bypassing Gate 1, as a spoofed/buggy
+  // cloud would) still gets MODE_MISMATCH from Gate 2 (ICD §1 second gate).
+  // NOTE: runs AFTER all cloud-command ACK checks — the fresh token issuedAt
+  // elevates the edge's monotonic newest_token past the session lock's.
+  const { signDoc } = require('./sign-helper.cjs');
+  const crypto = require('crypto');
+  const rawEnv = signDoc({
+    commandId: crypto.randomUUID(), correlationId: crypto.randomUUID(),
+    sessionId: 'sess-zone-smoke', vehicleId: EV, issuer: OP, mode: 'MODE2',
+    token: { tokenId: crypto.randomUUID(), issuedAt: Date.now() },
+    timestamp: Date.now(), ttlMs: 5000, payload: { action: 'CREEP', speedKmh: 2 },
+  });
+  mq.publish(`joppilot/v1/vehicles/${EV}/command`, JSON.stringify(rawEnv), { qos: 1 });
+  const rawAck = await waitAck(rawEnv.commandId, 2500);
+  assert('vehicle itself refuses Mode 2 before validFrom (Gate 2 authoritative)',
+    rawAck?.status === 'REJECTED' && rawAck?.reason === 'MODE_MISMATCH', JSON.stringify(rawAck));
+
   // 8. Revert via API → Mode 2 REFUSED on the vehicle again.
   const back = await httpPost(`/api/command/${EV}/zone`, { zone: 'public_approved_route' });
   assert('revert delivered to vehicle', back.status === 201 && back.body?.delivered === true, JSON.stringify(back.body));

@@ -40,7 +40,7 @@ node services/command/test/smoke-edge.cjs       # 19/19 — Gate 2 (schema/signa
 node services/command/test/smoke-drive.cjs      # 16/16 — M3-2 driving path over the actuation IPC (plays the CARLA bridge; edge only)
 node services/command/test/smoke-estop.cjs      # 11/11 — M3-3 dual-message E-STOP + command_id dedup (needs command svc + edge)
 node services/command/test/smoke-maneuver.cjs   # 15/15 — ICD §6 proposal flow incl. the APPROVE (CONFIRM) leg
-node services/command/test/smoke-zone.cjs       # 12/12 — permit-gated zone change + delivery to the vehicle (needs edge up)
+node services/command/test/smoke-zone.cjs       # 19/19 — permit gate + delivery + M3-5 conditions (validFrom + speed limit on the vehicle)
 docker exec joppilot_postgres psql -U joppilot -d joppilot_db \
   -c 'DELETE FROM fleet."Mission"; DELETE FROM fleet."PreDepartureCheck";'   # fleet smoke needs clean tables
 node services/fleet/test/smoke-fleet.cjs        # 25/25 — pre-departure + mission lifecycle + audit rows (needs command svc on 4000)
@@ -65,6 +65,12 @@ Manual probes: `POST /api/command/VEH-001/take-control` → token, then
   elevation test pushes it ~100 ms into the future, so a suite started
   back-to-back in the same second gets `Stale fencing token` on everything.
   Not a bug — leave ~1 s between smoke suites (or restart the edge).
+- **Run smoke-drive LAST (or restart the edge after it).** It connects as the
+  CARLA bridge and feeds pose, which STICKILY arms the pose-staleness
+  watchdog; once the test disconnects the feed stays silent, so the kernel
+  re-latches within 1 s of every CLEAR (fail-closed, by design — DEV-21).
+  Later suites then see `SAFE_STOP_LATCHED` everywhere and the maneuver
+  generator stays quiet.
 - Since M2-5 every command envelope must be SIGNED: services need
   COMMAND_SIGNING_KEY (in .env.example) and the edge needs EDGE_CLOUD_PUBKEY,
   or the edge NACKs everything with SCHEMA_INVALID. Crafted test envelopes

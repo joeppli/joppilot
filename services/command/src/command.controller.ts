@@ -270,6 +270,10 @@ export class CommandController {
     @Body('permitId') permitId?: string,
     @Body('reason') reason?: string,
     @Body('validUntil') validUntil?: number,
+    // M3-5 (ICD §1 permit conditions): activation start + speed limit —
+    // delivered in the signed ZoneConfig and ENFORCED ON THE VEHICLE.
+    @Body('validFrom') validFrom?: number,
+    @Body('speedLimitKmh') speedLimitKmh?: number,
   ) {
     // LEG-05: the recorded issuer is the authenticated admin in the cloud.
     const issuer = actorFrom(req, issuerBody);
@@ -306,15 +310,23 @@ export class CommandController {
           details: `Authorization validity window ends in the past (validUntil=${validUntil}).`,
         });
       }
+      // M3-5: a window that never opens is a broken permit, not a zone change.
+      if (typeof validFrom === 'number' && validFrom >= validUntil) {
+        await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'REJECTED', { reason: 'PERMIT_WINDOW_INVALID', from, to: zone, permitId, validFrom, validUntil });
+        throw new ForbiddenException({
+          reason: 'PERMIT_WINDOW_INVALID',
+          details: `validFrom (${validFrom}) must be before validUntil (${validUntil}).`,
+        });
+      }
     }
 
-    const permit = permitId ? { permitId, changedBy: issuer, reason, validUntil } : undefined;
+    const permit = permitId ? { permitId, changedBy: issuer, reason, validUntil, validFrom, speedLimitKmh } : undefined;
     // M2-5 (DEV-8 closed): the change is DELIVERED to the vehicle as a signed,
     // revision-monotonic config document. Delivery status is part of the
     // audit record — an undelivered change is only cloud-side state and the
     // vehicle stays on its stricter current zone (fail-safe).
     const delivery = this.zoneService.setZone(vehicleId, parsed.data, permit);
-    await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'ACK', { from, to: zone, permitId, reason, validUntil, ...delivery });
+    await this.logEdr(uuidv4(), vehicleId, issuer, 'ZONE_CHANGE', 'ACK', { from, to: zone, permitId, reason, validUntil, validFrom, speedLimitKmh, ...delivery });
     this.logger.log(`Zone change for ${vehicleId}: ${from} → ${zone} by ${issuer}${permitId ? ` (permit ${permitId})` : ''} (delivered=${delivery.delivered})`);
     return { status: 'success', vehicleId, zone, from, permitId, ...delivery };
   }
