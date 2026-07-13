@@ -28,7 +28,8 @@
             "MODE_MISMATCH",
             "DUPLICATE_COMMAND",
             "SAFE_STOP_LATCHED",
-            "DIAG_DEFERRED"
+            "DIAG_DEFERRED",
+            "PERMIT_SPEED_LIMIT"
           ]
         },
         "details": {

@@ -251,8 +251,10 @@ export const ZonePermitConfigSchema = z.object({
   // Validity window end (epoch ms). The edge reverts to the safe default the
   // moment it lapses — enforced on the vehicle, independent of the cloud.
   validUntil: z.number().int().positive(),
-  // validFrom + speedLimitKmh are DELIVERED now but ENFORCED on the edge in
-  // M3-5 (per the timeline); carrying them from day one avoids a schema bump.
+  // M3-5: BOTH enforced on the vehicle (ICD §1 permit conditions) — before
+  // validFrom the permissive zone is not yet active (edge stays on the safe
+  // default), and Mode 2 commands above speedLimitKmh are NACKed
+  // (PERMIT_SPEED_LIMIT) while the internal sim clamps its road speed.
   validFrom: z.number().int().positive().optional(),
   speedLimitKmh: z.number().positive().optional(),
 });
@@ -446,7 +448,10 @@ export const RejectReasonSchema = z.enum([
   'MODE_MISMATCH',
   'DUPLICATE_COMMAND',
   'SAFE_STOP_LATCHED',
-  'DIAG_DEFERRED'
+  'DIAG_DEFERRED',
+  // M3-5 (ICD §1 permit conditions): a Mode 2 command requesting a speed
+  // above the zone permit's speedLimitKmh is refused ON THE VEHICLE.
+  'PERMIT_SPEED_LIMIT'
 ]);
 
 export const CommandAckSchema = z.object({
