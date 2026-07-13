@@ -55,13 +55,20 @@ export async function getIdentity(cfg: AwsConfig, idToken: string): Promise<AwsI
   };
 }
 
-/** SigV4-presign the IoT WebSocket URL (service: iotdevicegateway). */
+/** SigV4-presign the IoT WebSocket URL (service: iotdevicegateway).
+ *
+ *  IoT-specific quirk (per the IoT developer guide and the v2 device SDK):
+ *  with TEMPORARY credentials the session token must NOT be part of the
+ *  canonical request — sign with access key + secret only, then APPEND
+ *  X-Amz-Security-Token to the query AFTER the signature is computed.
+ *  Including it in the signed query (the S3-style default of
+ *  @smithy/signature-v4) makes the device gateway reject the handshake. */
 export async function presignWssUrl(cfg: AwsConfig, id: AwsIdentity): Promise<string> {
   const signer = new SignatureV4({
     credentials: {
       accessKeyId: id.accessKeyId,
       secretAccessKey: id.secretAccessKey,
-      sessionToken: id.sessionToken,
+      // sessionToken deliberately OMITTED — appended unsigned below.
     },
     region: cfg.region,
     service: 'iotdevicegateway',
@@ -79,7 +86,8 @@ export async function presignWssUrl(cfg: AwsConfig, id: AwsIdentity): Promise<st
   const qs = Object.entries(signed.query ?? {})
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
     .join('&');
-  return `wss://${cfg.iotEndpoint}${signed.path}?${qs}`;
+  return `wss://${cfg.iotEndpoint}${signed.path}?${qs}`
+    + `&X-Amz-Security-Token=${encodeURIComponent(id.sessionToken)}`;
 }
 
 /**
