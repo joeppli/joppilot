@@ -83,7 +83,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // In cloud-command mode the operatorId MUST equal the signed-in Cognito
   // username (identity binding, LEG-05) — else take-control 403s. Local dev
   // has no identity provider, so a random id is fine there.
-  const [operatorId] = useState(() => (cloudApi && getUsername()) || `OP-${Math.floor(Math.random() * 1000)}`);
+  const [operatorId, setOperatorId] = useState(() => (cloudApi && getUsername()) || `OP-${Math.floor(Math.random() * 1000)}`);
   const [token, setToken] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnState>('connecting');
   const [telemetry, setTelemetry] = useState<TelemetryPayload | null>(null);
@@ -146,6 +146,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (!awsConfig) return;
     setConnection(cloud.state === 'live' ? 'connected' : cloud.state === 'connecting' ? 'connecting' : 'disconnected');
   }, [cloud.state]);
+
+  // Correct operatorId once the Hosted-UI sign-in completes. The username is
+  // only readable AFTER completeLoginIfRedirected has stored the tokens (async,
+  // in useCloudTelemetry) — which is strictly after this provider's first
+  // render, where operatorId was seeded with a random fallback. cloud.state
+  // moving off 'signed-out' is the signal the token (hence username) is now
+  // available; without this a FRESH sign-in would drive with the random id and
+  // the cloud would reject it (403 IDENTITY_MISMATCH, LEG-05 identity binding).
+  useEffect(() => {
+    if (!cloudApi) return;
+    const u = getUsername();
+    if (u && u !== operatorId) setOperatorId(u);
+  }, [cloud.state, operatorId]);
 
   // ── Local sockets (skipped entirely in cloud mode) ──
   useEffect(() => {
