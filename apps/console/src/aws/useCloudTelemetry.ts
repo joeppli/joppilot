@@ -39,6 +39,10 @@ export function useCloudTelemetry(
   const identityRef = useRef<AwsIdentity | null>(null);
   const idTokenRef = useRef<string | null>(null);
   const stoppedRef = useRef(false);
+  // Consecutive failed dials: a broker that keeps closing the socket (e.g.
+  // the DEV-23 IoT policy not attached yet) must surface as an ERROR, not an
+  // eternal "connecting" — retrying continues either way.
+  const failsRef = useRef(0);
 
   const dial = useCallback(async () => {
     if (!cfg || stoppedRef.current) return;
@@ -58,7 +62,10 @@ export function useCloudTelemetry(
         client.subscribe(
           [`${base}/telemetry`, `${base}/heartbeat`, `${base}/maneuver/proposal`, `${base}/maneuver/status`],
           { qos: 0 },
-          (err) => setState(err ? 'error' : 'live'),
+          (err) => {
+            if (!err) failsRef.current = 0;
+            setState(err ? 'error' : 'live');
+          },
         );
       });
       client.on('message', (topic, message) => {
@@ -75,7 +82,10 @@ export function useCloudTelemetry(
       client.on('close', () => {
         clientRef.current = null;
         if (!stoppedRef.current) {
-          setState('connecting');
+          failsRef.current += 1;
+          // 5 straight failures = something is wrong (missing IoT policy,
+          // clock skew, …) — show error while continuing to retry.
+          setState(failsRef.current >= 5 ? 'error' : 'connecting');
           // Fresh signature every attempt — a replayed URL is dead after 60 s.
           setTimeout(() => void dial(), RECONNECT_MS);
         }
