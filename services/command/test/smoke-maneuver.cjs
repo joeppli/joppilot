@@ -80,7 +80,7 @@ client.on('connect', () => {
 
     // Keep the edge watchdog happy with deadman pings (every 1s)
     const deadmanInterval = setInterval(() => {
-      client.publish(TOPICS.deadman, JSON.stringify({ timestamp: Date.now() }));
+      client.publish(TOPICS.deadman, JSON.stringify(signDoc({ vehicleId: V, timestamp: Date.now() })));
     }, 1000);
 
     // Clear any existing safe-stop latch from prior tests

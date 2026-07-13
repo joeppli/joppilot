@@ -48,6 +48,19 @@ export class ManeuverController {
       throw new UnauthorizedException('Invalid fencing token. You do not have control.');
     }
 
+    // ICD §6 (audit-9): a decision may only land on one of the proposal's OWN
+    // options — the option semantics are frozen with the ADS team, so an
+    // optionId the ADS never offered must not reach the B-boundary, and the
+    // EDR must never evidence a decision on a non-existent option (LEG-05).
+    // The edge re-checks this independently (2nd gate).
+    const validOptionIds = new Set(proposal.options.map((o) => o.optionId));
+    if (optionId && !validOptionIds.has(optionId)) {
+      throw new BadRequestException({
+        reason: 'INVALID_OPTION',
+        details: `Option '${optionId}' is not one of proposal ${proposalId}'s options (ICD §6).`,
+      });
+    }
+
     let payload: CommandPayload;
     switch (decision) {
       case 'CONFIRM':

@@ -116,8 +116,9 @@ async function drive(name, payload, mode = 'MODE2') {
 
 client.on('connect', async () => {
   client.subscribe(T.ack);
-  // Keep the cloud watchdog happy (any inbound MQTT resets it; deadman is the ping).
-  const ping = setInterval(() => client.publish(T.deadman, JSON.stringify({ timestamp: Date.now() })), 800);
+  // Keep the edge watchdog happy — SIGNED deadman pings only (audit-9): the
+  // edge ignores unauthenticated liveness input and keeps counting.
+  const ping = setInterval(() => client.publish(T.deadman, JSON.stringify(signDoc({ vehicleId: V, timestamp: Date.now() }))), 800);
   // Keep the pose watchdog happy (silence > 3 s latches fail-closed).
   const pose = setInterval(feedPose, 500);
   feedPose();

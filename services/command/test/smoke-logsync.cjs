@@ -71,7 +71,7 @@ const vlogCount = (type) =>
   });
 
   // 0. Healthy baseline: deadman pings + clean latch, note the EDR counts.
-  let ping = setInterval(() => mq.publish(T.deadman, JSON.stringify({ timestamp: Date.now() })), 800);
+  let ping = setInterval(() => mq.publish(T.deadman, JSON.stringify(signDoc({ vehicleId: V, timestamp: Date.now() }))), 800);
   await sleep(700);
   const clr0 = envelope({ action: 'CLEAR_SAFE_STOP' });
   mq.publish(T.cmd, JSON.stringify(clr0), { qos: 1 });
@@ -97,7 +97,7 @@ const vlogCount = (type) =>
   // Give every client (edge / command svc / this test) time to reconnect,
   // then resume operator liveness so the sync drain gate opens.
   await sleep(4000);
-  ping = setInterval(() => mq.publish(T.deadman, JSON.stringify({ timestamp: Date.now() })), 800);
+  ping = setInterval(() => mq.publish(T.deadman, JSON.stringify(signDoc({ vehicleId: V, timestamp: Date.now() }))), 800);
   await sleep(4000); // ≥1 sync tick after the drain gate opens
 
   // 3. The vehicle is latched (offline watchdog) — visible in heartbeats again.

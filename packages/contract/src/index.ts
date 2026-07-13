@@ -62,7 +62,10 @@ export const ZONE_MODE_MATRIX: Record<ZoneType, ZonePermissions> = {
 };
 
 // Mode classification per command action (ICD §4 command catalogue).
-export const MODE2_ACTIONS = ['STEER', 'DRIVE', 'SELECT_DIRECTION', 'CREEP', 'TURN', 'PARK'] as const;
+// LIGHTS (headlights / turn signals) is Mode-2-only: ICD §4 lists it under
+// "Mode 2 — lights & signals"; the Mode 1 catalogue only grants hazard /
+// warning lights (HAZARD_LIGHTS, inferred MODE1 by default below).
+export const MODE2_ACTIONS = ['STEER', 'DRIVE', 'SELECT_DIRECTION', 'CREEP', 'TURN', 'PARK', 'LIGHTS'] as const;
 export const DIAG_READ_ACTIONS = ['PULL_LOGS'] as const;
 export const DIAG_DISRUPTIVE_ACTIONS = ['RESTART_SERVICE', 'RESTART_COMPUTER', 'RESTART_SENSOR', 'UPDATE_CONFIG'] as const;
 export const DIAG_ACTIONS = [...DIAG_READ_ACTIONS, ...DIAG_DISRUPTIVE_ACTIONS] as const;
@@ -147,6 +150,11 @@ export const ConfirmPreDepartureCheckCommandSchema = z.object({ action: z.litera
 export const IntercomCommandSchema = z.object({ action: z.literal('INTERCOM'), state: z.enum(['OPEN', 'CLOSE']) });
 export const PersonSafetyCommandSchema = z.object({ action: z.literal('PERSON_SAFETY'), actionType: z.enum(['WARN_AWAY', 'LOCK_COMPARTMENT']) });
 export const MarkCompletedCommandSchema = z.object({ action: z.literal('MARK_COMPLETED'), stopId: z.string() });
+// ICD §4 Mode 1 "signaling & environment alert": hazard / warning lights.
+// Deliberately a SEPARATE action from the Mode 2 LIGHTS command — headlights
+// and turn signals are Mode-2-only (the ADS signals for itself on a public
+// route), hazards are a supervision capability valid in any operating zone.
+export const HazardLightsCommandSchema = z.object({ action: z.literal('HAZARD_LIGHTS'), on: z.boolean() });
 
 // ------------------------------------------------------------------
 // MODE 2 COMMANDS
@@ -157,7 +165,13 @@ export const SelectDirectionCommandSchema = z.object({ action: z.literal('SELECT
 export const CreepCommandSchema = z.object({ action: z.literal('CREEP'), speedKmh: z.number().min(0).max(5) });
 export const TurnCommandSchema = z.object({ action: z.literal('TURN'), direction: z.enum(['LEFT', 'RIGHT', 'STRAIGHT']) });
 export const ParkCommandSchema = z.object({ action: z.literal('PARK'), engage: z.boolean() });
-export const LightsCommandSchema = z.object({ action: z.literal('LIGHTS'), state: z.enum(['OFF', 'LOW', 'HIGH', 'HAZARD', 'BLINK_LEFT', 'BLINK_RIGHT']) });
+// ICD §4 splits lights across the two catalogues: hazard/warning lights are a
+// Mode 1 "signaling & environment alert" capability (HAZARD_LIGHTS above),
+// while headlights and turn signals exist ONLY in the Mode 2 "lights &
+// signals" catalogue — on a public route the ADS owns them, so LIGHTS is a
+// MODE2 action (see MODE2_ACTIONS) and both gates refuse it outside a
+// Mode-2-capable zone.
+export const LightsCommandSchema = z.object({ action: z.literal('LIGHTS'), state: z.enum(['OFF', 'LOW', 'HIGH', 'BLINK_LEFT', 'BLINK_RIGHT']) });
 export const HornCommandSchema = z.object({ action: z.literal('HORN'), durationMs: z.number().int().min(0).max(5000) });
 export const SpeakerCommandSchema = z.object({ action: z.literal('SPEAKER'), message: z.string() });
 
@@ -183,7 +197,7 @@ export const PullLogsCommandSchema = z.object({ action: z.literal('PULL_LOGS'), 
 export const CommandPayloadSchema = z.discriminatedUnion('action', [
   SafeStopCommandSchema, EStopCommandSchema, ClearSafeStopCommandSchema, ConfirmManeuverCommandSchema, RejectManeuverCommandSchema, SelectAlternativeCommandSchema,
   StartMissionCommandSchema, PauseMissionCommandSchema, AbortMissionCommandSchema, ActivateADSCommandSchema, DeactivateADSCommandSchema, ResumeAutonomyCommandSchema,
-  ConfirmPreDepartureCheckCommandSchema, IntercomCommandSchema, PersonSafetyCommandSchema, MarkCompletedCommandSchema,
+  ConfirmPreDepartureCheckCommandSchema, IntercomCommandSchema, PersonSafetyCommandSchema, MarkCompletedCommandSchema, HazardLightsCommandSchema,
   SteerCommandSchema, DriveCommandSchema, SelectDirectionCommandSchema, CreepCommandSchema, TurnCommandSchema, ParkCommandSchema, LightsCommandSchema, HornCommandSchema, SpeakerCommandSchema,
   RestartServiceCommandSchema, RestartComputerCommandSchema, RestartSensorCommandSchema, UpdateConfigCommandSchema, PullLogsCommandSchema
 ]);
@@ -463,6 +477,36 @@ export const EdgeLogBatchSchema = z.object({
   vehicleId: z.string().min(1),
   events: z.array(EdgeLogEventSchema).min(1).max(100),
 });
+
+// The cloud confirms a synced batch on .../logsync/ack with a SIGNED document
+// (audit-9). Both hardenings protect the on-vehicle evidence buffer (LEG-04):
+//   - `bootId` scoping: the edge only trims events when the ack names ITS OWN
+//     boot — a stale ack from a previous boot (kernel restarted while a batch
+//     was in flight) can no longer discard the new boot's unsynced events,
+//     which would silently break the RES-02 "lossless" guarantee.
+//   - the Ed25519 signature (same cloud key as commands): a spoofed ack must
+//     not be able to make the vehicle destroy evidence it never synced.
+export const EdgeLogSyncAckSchema = z.object({
+  vehicleId: z.string().min(1),
+  bootId: z.string().min(1),
+  upTo: z.number().int().nonnegative(), // highest confirmed seq of that boot
+  // Ed25519 over canonicalStringify(ack without `signature`), base64.
+  signature: z.string().min(1),
+});
+
+// Cloud → vehicle operator-liveness ping (the "deadman", ICD §9). This is the
+// ONE input that keeps the vehicle's local watchdog from latching, so it gets
+// the same integrity protection as commands (audit-9; ICD §1: the link "can
+// drop, be delayed, or be spoofed"): signed with the cloud key, addressed to
+// one vehicle, and timestamped — the edge additionally requires the timestamp
+// to be fresh and strictly increasing, so a captured ping cannot be replayed
+// to keep a vehicle out of safe mode after the operator session is gone.
+export const DeadmanPingSchema = z.object({
+  vehicleId: z.string().min(1),
+  timestamp: z.number().int().positive(), // UTC epoch ms, cloud clock
+  // Ed25519 over canonicalStringify(ping without `signature`), base64.
+  signature: z.string().min(1),
+});
 export const AckStatusSchema = z.enum(['ACK', 'REJECTED', 'ERROR']);
 export const RejectReasonSchema = z.enum([
   'UNAUTHORIZED',
@@ -513,3 +557,5 @@ export type ZonePermitConfig = z.infer<typeof ZonePermitConfigSchema>;
 export type ZoneConfig = z.infer<typeof ZoneConfigSchema>;
 export type EdgeLogEvent = z.infer<typeof EdgeLogEventSchema>;
 export type EdgeLogBatch = z.infer<typeof EdgeLogBatchSchema>;
+export type EdgeLogSyncAck = z.infer<typeof EdgeLogSyncAckSchema>;
+export type DeadmanPing = z.infer<typeof DeadmanPingSchema>;

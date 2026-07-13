@@ -44,7 +44,8 @@
     "SELECT_DIRECTION",
     "CREEP",
     "TURN",
-    "PARK"
+    "PARK",
+    "LIGHTS"
   ],
   "diagReadActions": [
     "PULL_LOGS"
