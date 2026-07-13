@@ -44,7 +44,7 @@ function check(name, got, wantStatus, wantReason) {
 
 client.on('connect', async () => {
   client.subscribe(T.ack);
-  const sendPing = () => client.publish(T.deadman, JSON.stringify({ timestamp: Date.now() }));
+  const sendPing = () => client.publish(T.deadman, JSON.stringify(signDoc({ vehicleId: V, timestamp: Date.now() })));
   sendPing();
   const ping = setInterval(sendPing, 800); // keep the edge watchdog happy
   await new Promise((r) => setTimeout(r, 500));

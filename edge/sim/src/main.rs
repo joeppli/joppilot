@@ -115,6 +115,10 @@ struct ActiveProposal {
     proposal_id: String,
     default_on_timeout: String,
     deadline_ms: u64,
+    // ICD §6 (audit-9): the option ids this proposal actually offered — a
+    // decision naming any other option is refused (the option semantics are
+    // frozen with the ADS; an un-offered option must never reach actuation).
+    option_ids: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -1126,8 +1130,9 @@ async fn main() {
                 let deadline = now_ms() + validity_ms;
                 let active = ActiveProposal {
                     proposal_id: proposal_id.clone(),
-                    default_on_timeout: opt_b_id,
+                    default_on_timeout: opt_b_id.clone(),
                     deadline_ms: deadline,
+                    option_ids: vec![opt_a_id.clone(), opt_b_id],
                 };
                 *active_prop.lock().unwrap() = Some(active);
 
@@ -1149,6 +1154,13 @@ async fn main() {
     }
 
     // -------------------- Command ingest / 2nd gate (authoritative) --------------------
+    // Newest deadman-ping timestamp accepted (audit-9): required strictly
+    // increasing so a captured ping cannot be replayed to suppress the
+    // watchdog after the operator session is gone.
+    let mut last_deadman_ts: u64 = 0;
+    // Freshness bound on the ping's cloud timestamp — generous enough for
+    // sim clock skew; real thresholds are tuned with OP-7 in the pilot.
+    const DEADMAN_FRESH_MS: u64 = 10_000;
     loop {
         let event = match eventloop.poll().await {
             Ok(ev) => ev,
@@ -1198,20 +1210,68 @@ async fn main() {
 
         let Event::Incoming(Incoming::Publish(p)) = event else { continue };
         {
-            // Any inbound message proves the cloud is alive → reset & arm the watchdog.
-            *last_contact_time.lock().unwrap() = now_ms();
-            *watchdog_armed.lock().unwrap() = true;
+            // audit-9 (ICD §1: the link "can drop, be delayed, or be
+            // spoofed"): cloud liveness — the input that KEEPS the vehicle
+            // out of safe mode — is only proven by messages that verify
+            // against the pinned cloud key. An unauthenticated publish must
+            // never reset or arm the watchdog.
+            let mark_cloud_contact = || {
+                *last_contact_time.lock().unwrap() = now_ms();
+                *watchdog_armed.lock().unwrap() = true;
+            };
 
-            // The deadman topic is just a liveness ping; nothing to validate.
+            // Deadman: a SIGNED liveness ping {vehicleId, timestamp,
+            // signature} (contract DeadmanPingSchema). Signature + own
+            // vehicleId + fresh, strictly increasing timestamp — anything
+            // else is ignored and the watchdog keeps counting (fail-safe).
             if p.topic == deadman_topic {
+                let Ok(v) = serde_json::from_slice::<Value>(&p.payload) else { continue };
+                if !verify_signature(&v, &cloud_pubkey) {
+                    println!("⛔ DEADMAN IGNORED: signature missing/invalid (watchdog keeps counting).");
+                    continue;
+                }
+                if v.get("vehicleId").and_then(|x| x.as_str()) != Some(vehicle_id) {
+                    println!("⛔ DEADMAN IGNORED: addressed to another vehicle.");
+                    continue;
+                }
+                let Some(ts) = v.get("timestamp").and_then(|x| x.as_u64()) else { continue };
+                let now = now_ms();
+                if ts + DEADMAN_FRESH_MS < now || ts > now + DEADMAN_FRESH_MS {
+                    println!("⛔ DEADMAN IGNORED: stale/future timestamp (replay-safe).");
+                    continue;
+                }
+                if ts <= last_deadman_ts {
+                    println!("⛔ DEADMAN IGNORED: timestamp not increasing (replay-safe).");
+                    continue;
+                }
+                last_deadman_ts = ts;
+                mark_cloud_contact();
                 continue;
             }
 
             // Log-sync ack (RES-02): the cloud confirmed events up to `upTo` —
             // NOW they may leave the on-vehicle buffer (lossless handshake).
+            // audit-9: the ack is evidence-destroying input (it trims the
+            // LEG-04 buffer), so it must be SIGNED, addressed to this vehicle
+            // and scoped to THIS boot — a stale ack from a previous boot must
+            // not discard the new boot's unsynced events.
             if p.topic == logsync_ack_topic {
                 if let Ok(v) = serde_json::from_slice::<Value>(&p.payload) {
+                    if !verify_signature(&v, &cloud_pubkey) {
+                        println!("⛔ LOG SYNC ACK IGNORED: signature missing/invalid (events stay buffered).");
+                        continue;
+                    }
+                    if v.get("vehicleId").and_then(|x| x.as_str()) != Some(vehicle_id) {
+                        println!("⛔ LOG SYNC ACK IGNORED: addressed to another vehicle.");
+                        continue;
+                    }
+                    let my_boot = event_log.lock().unwrap().boot_id.clone();
+                    if v.get("bootId").and_then(|x| x.as_str()) != Some(my_boot.as_str()) {
+                        println!("⛔ LOG SYNC ACK IGNORED: names another boot — would drop unsynced events (RES-02).");
+                        continue;
+                    }
                     if let Some(up_to) = v.get("upTo").and_then(|x| x.as_u64()) {
+                        mark_cloud_contact();
                         let mut l = event_log.lock().unwrap();
                         while l.unsynced.front().and_then(|e| e.get("seq")).and_then(|s| s.as_u64()).map(|s| s <= up_to).unwrap_or(false) {
                             l.unsynced.pop_front();
@@ -1254,6 +1314,9 @@ async fn main() {
                     println!("⛔ ZONE-CONFIG IGNORED: addressed to another vehicle (fail-safe).");
                     continue;
                 }
+                // Signature + addressee verified: this IS cloud contact, even
+                // if the revision below turns out stale (audit-9).
+                mark_cloud_contact();
                 let revision = doc.get("revision").and_then(|v| v.as_u64()).unwrap_or(0);
                 let zone = doc.get("zone").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let permit_valid_until = doc.pointer("/permit/validUntil").and_then(|v| v.as_u64());
@@ -1311,6 +1374,11 @@ async fn main() {
                 client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
                 continue;
             }
+            // A signature-valid envelope proves the cloud produced it — that
+            // alone is cloud contact for the watchdog, even if the command is
+            // NACKed further down (TTL/token/zone). Unverifiable traffic
+            // above deliberately does NOT reset it (audit-9).
+            mark_cloud_contact();
 
             let envelope: CommandEnvelope = match serde_json::from_value(raw) {
                 Ok(e) => e,
@@ -1536,11 +1604,43 @@ async fn main() {
                     continue;
                 }
 
+                // ICD §6 (audit-9): the decision must land on an option this
+                // proposal actually OFFERED. The proposal stays active on a
+                // refusal — the operator can retry within the window, and the
+                // safe default still wins on timeout.
+                let option_ids = prop.as_ref().map(|ap| ap.option_ids.clone()).unwrap_or_default();
+                let option_valid = match action.as_str() {
+                    // SELECT_ALTERNATIVE must name one of the offered options.
+                    "SELECT_ALTERNATIVE" => selected_option.as_deref()
+                        .map(|o| option_ids.iter().any(|x| x == o)).unwrap_or(false),
+                    // CONFIRM may omit the option (approves the ADS's proposed
+                    // maneuver) but must not name a foreign one.
+                    "CONFIRM_MANEUVER" => selected_option.as_deref()
+                        .map(|o| option_ids.iter().any(|x| x == o)).unwrap_or(true),
+                    _ => true, // REJECT_MANEUVER carries no option
+                };
+                if !option_valid {
+                    drop(prop);
+                    println!("⛔ MANEUVER DECISION REJECTED: option '{}' was never offered by proposal '{}'. ID: {}",
+                        selected_option.as_deref().unwrap_or("<none>"), decision_proposal_id, cid);
+                    let ack = ack_json(&cid, "REJECTED", Some("SCHEMA_INVALID"));
+                    remember_ack(&seen_commands, &cid, &ack);
+                    client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();
+                    continue;
+                }
+
                 *prop = None;
                 drop(prop);
 
                 let resolved_option = match action.as_str() {
-                    "CONFIRM_MANEUVER" => selected_option.unwrap_or_else(|| decision_proposal_id.clone()),
+                    // CONFIRM without an explicit option approves the ADS's
+                    // proposed maneuver = the proposal's FIRST option (never
+                    // the proposalId, which is not an option — LEG-05: the
+                    // EDR must evidence a real option).
+                    "CONFIRM_MANEUVER" => selected_option
+                        .or_else(|| option_ids.first().cloned())
+                        .unwrap_or_default(),
+                    // Validated present + offered above.
                     "SELECT_ALTERNATIVE" => selected_option.unwrap_or_default(),
                     _ => String::new(), // REJECT_MANEUVER
                 };

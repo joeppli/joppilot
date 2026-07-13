@@ -73,7 +73,9 @@ export function Operations() {
             <p className="text-sm muted" style={{ marginBottom: 8 }}>Signalling (Mode 1 — valid in any operating zone):</p>
             <div className="row gap-2 wrap">
               <Button size="sm" variant="ghost" disabled={!hasControl} onClick={() => drive({ action: 'HORN', durationMs: 500 })}>Horn</Button>
-              <Button size="sm" variant="ghost" disabled={!hasControl} onClick={() => drive({ action: 'LIGHTS', state: 'HAZARD' })}>Hazard</Button>
+              {/* ICD §4: hazards are the Mode 1 signalling capability; head-
+                  lights / turn signals are Mode-2-only (LIGHTS command). */}
+              <Button size="sm" variant="ghost" disabled={!hasControl} onClick={() => drive({ action: 'HAZARD_LIGHTS', on: true })}>Hazard</Button>
             </div>
           </div>
         </Card>

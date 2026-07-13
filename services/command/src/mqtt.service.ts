@@ -2,8 +2,23 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/commo
 import * as mqtt from 'mqtt';
 import * as fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import { HeartbeatSchema, EdgeLogBatchSchema } from '@joppilot/contract';
+import { HeartbeatSchema, EdgeLogBatchSchema, CommandAckSchema } from '@joppilot/contract';
 import { PrismaService } from './prisma.service';
+import { SigningService } from './signing.service';
+
+/**
+ * The vehicle segment of a joppilot/v1/vehicles/{id}/... topic. The broker
+ * (AWS IoT per-thing policy / mTLS) only lets a vehicle publish under ITS OWN
+ * prefix, so this segment — not any vehicleId inside the payload — is the
+ * authenticated sender identity. Every vehicle-originated consumer below binds
+ * the payload to it (audit-9): a compromised vehicle cert must not be able to
+ * forge telemetry, latch records or EDR evidence rows for ANOTHER vehicle
+ * (SEC-01/04, LEG-04 chain of evidence).
+ */
+export function vehicleFromTopic(topic: string): string | undefined {
+  const parts = topic.split('/');
+  return parts[2] === 'vehicles' ? parts[3] : undefined;
+}
 
 @Injectable()
 export class MqttService implements OnModuleInit, OnModuleDestroy {
@@ -15,7 +30,10 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   // may be recorded twice; append-only EDR tolerates duplicates.
   private readonly lastLatch = new Map<string, boolean>();
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private signing: SigningService,
+  ) {}
 
   onModuleInit() {
     // M2-4-3 interim: the cloud has no MQTT broker until IoT Core lands
@@ -82,22 +100,44 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
     this.client.on('message', async (topic, message) => {
       try {
+        // The mTLS/topic-policy-authenticated sender (audit-9) — every
+        // vehicle-originated payload below must match it.
+        const topicVehicle = vehicleFromTopic(topic);
+        if (!topicVehicle) return;
+
         if (topic.endsWith('/ack')) {
           this.logger.log(`Received ACK on ${topic}: ${message.toString()}`);
-          const payload = JSON.parse(message.toString());
+          // Untrusted network input: validate against the contract like every
+          // other vehicle-originated message (audit-9).
+          const parsedAck = CommandAckSchema.safeParse(JSON.parse(message.toString()));
+          if (!parsedAck.success) {
+            this.logger.warn(`Dropped malformed ACK on ${topic}: ${parsedAck.error.issues[0]?.message ?? 'schema error'}`);
+            return;
+          }
+          const payload = parsedAck.data;
           // Append-only EDR (LEG-04/SEC-06): the ACK/NACK is a NEW record
           // correlated by commandId — the PENDING row is never mutated.
           const original = await this.prisma.eventDataRecord.findFirst({
             where: { commandId: payload.commandId },
             orderBy: { createdAt: 'asc' },
           });
+          // audit-9: only the command's own vehicle may answer it — a vehicle
+          // publishing an ACK for ANOTHER vehicle's command (its policy allows
+          // its own /ack topic, the payload names any commandId) must not be
+          // able to inject a forged outcome into the evidence chain.
+          if (original && original.vehicleId !== topicVehicle) {
+            this.logger.warn(
+              `Dropped ACK for ${payload.commandId}: published by '${topicVehicle}' but the command targets '${original.vehicleId}' (spoofed cross-vehicle ACK).`,
+            );
+            return;
+          }
           await this.prisma.eventDataRecord.create({
             data: {
               commandId: payload.commandId,
               // SEC-06: the ACK inherits the correlation id of the command it
               // answers, so the whole exchange reads as one chain.
               correlationId: original?.correlationId ?? uuidv4(),
-              vehicleId: original?.vehicleId ?? topic.split('/')[3],
+              vehicleId: original?.vehicleId ?? topicVehicle,
               issuer: 'VEHICLE',
               action: original?.action ?? 'UNKNOWN',
               status: payload.status,
@@ -108,9 +148,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
           // await so a malformed heartbeat rejects INTO this try/catch —
           // fire-and-forget would turn it into a process-killing unhandled
           // rejection (untrusted network input must never crash the service).
-          await this.recordLatchTransition(message);
+          await this.recordLatchTransition(topicVehicle, message);
         } else if (topic.endsWith('/logsync')) {
-          await this.recordEdgeLogBatch(message);
+          await this.recordEdgeLogBatch(topicVehicle, message);
         } else if (topic.includes('/maneuver/') && this.maneuverHandler) {
           this.maneuverHandler(topic, message);
         }
@@ -140,7 +180,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
    * on-vehicle event log + lossless sync is M3-6 (LEG-04); this cloud-side
    * row exists so no latch entry goes unrecorded until then.
    */
-  private async recordLatchTransition(message: Buffer) {
+  private async recordLatchTransition(topicVehicle: string, message: Buffer) {
     let raw: unknown;
     try {
       raw = JSON.parse(message.toString());
@@ -150,6 +190,13 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     const parsed = HeartbeatSchema.safeParse(raw);
     if (!parsed.success) return;
     const hb = parsed.data;
+    // audit-9: the latch EDR row is evidence (RES-04/LEG-04) — it must be
+    // attributed to the vehicle that actually SENT the heartbeat, not to
+    // whatever vehicleId the payload claims.
+    if (hb.vehicleId !== topicVehicle) {
+      this.logger.warn(`Dropped heartbeat claiming '${hb.vehicleId}' published from '${topicVehicle}' (spoof-safe binding).`);
+      return;
+    }
     const latched = hb.latched === true;
     const prev = this.lastLatch.get(hb.vehicleId);
     this.lastLatch.set(hb.vehicleId, latched);
@@ -179,7 +226,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
    * clock at the moment it happened (possibly long before sync), which is
    * exactly what the chain of evidence needs (time-synced recording, LEG-04).
    */
-  private async recordEdgeLogBatch(message: Buffer) {
+  private async recordEdgeLogBatch(topicVehicle: string, message: Buffer) {
     let raw: unknown;
     try {
       raw = JSON.parse(message.toString());
@@ -192,6 +239,18 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
     const batch = parsed.data;
+    // audit-9: these become EDR evidence rows (LEG-04) — bind the batch AND
+    // every event in it to the vehicle that actually published it. The edge
+    // buffer is per-process, so a legitimate batch is uniform in vehicleId
+    // and bootId; anything mixed is forged or corrupt.
+    const bootId = batch.events[0].bootId;
+    if (
+      batch.vehicleId !== topicVehicle ||
+      batch.events.some((e) => e.vehicleId !== topicVehicle || e.bootId !== bootId)
+    ) {
+      this.logger.warn(`Dropped edge log batch from '${topicVehicle}': payload names another vehicle/boot (spoof-safe binding).`);
+      return;
+    }
     let appended = 0;
     for (const ev of batch.events) {
       const vlogId = `vlog-${ev.vehicleId}-${ev.bootId}-${ev.seq}`;
@@ -221,8 +280,13 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     // batch from its buffer. Acked AFTER the EDR writes above — an ack for
     // unpersisted events would reintroduce the loss window. Duplicates
     // (QoS1 redelivery / retry) are acked too: they are already evidenced.
+    // audit-9: the ack is SIGNED and names the batch's bootId — the edge only
+    // trims events for its OWN boot and ignores unverifiable acks, so neither
+    // a stale ack from a previous boot nor a spoofed one can make the vehicle
+    // discard evidence it never synced (RES-02 "lossless", LEG-04).
     const upTo = Math.max(...batch.events.map((e) => e.seq));
-    this.publish(`joppilot/v1/vehicles/${batch.vehicleId}/logsync/ack`, { vehicleId: batch.vehicleId, upTo });
+    const ack = this.signing.signDocument({ vehicleId: batch.vehicleId, bootId, upTo });
+    this.publish(`joppilot/v1/vehicles/${batch.vehicleId}/logsync/ack`, ack);
   }
 
   /**

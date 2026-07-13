@@ -76,8 +76,16 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     // unhandled rejection that kills the fleet's link-loss monitoring.
     this.client.on('message', (topic, message) => {
       try {
+        // audit-9: the broker's per-thing topic policy (mTLS) is the sender's
+        // authenticated identity — the payload's vehicleId must match the
+        // topic segment, or a compromised vehicle cert could impersonate
+        // another vehicle's telemetry/heartbeat (SEC-01/04).
+        const parts = topic.split('/');
+        const topicVehicle = parts[2] === 'vehicles' ? parts[3] : undefined;
+        if (!topicVehicle) return;
+
         if (topic.endsWith('/heartbeat')) {
-          this.handleHeartbeat(message);
+          this.handleHeartbeat(topicVehicle, message);
           return;
         }
         if (topic.endsWith('/telemetry')) {
@@ -88,6 +96,10 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
             return;
           }
           const payload = parsed.data;
+          if (payload.vehicleId !== topicVehicle) {
+            this.logger.warn(`Dropped telemetry claiming '${payload.vehicleId}' published from '${topicVehicle}' (spoof-safe binding).`);
+            return;
+          }
 
           // 1. Broadcast to Frontend via Socket.IO (low latency, RTP-02)
           this.telemetryGateway.broadcastTelemetry(payload.vehicleId, payload);
@@ -110,13 +122,19 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     this.client?.end();
   }
 
-  private handleHeartbeat(message: Buffer) {
+  private handleHeartbeat(topicVehicle: string, message: Buffer) {
     const parsed = HeartbeatSchema.safeParse(JSON.parse(message.toString()));
     if (!parsed.success) {
       this.logger.warn('Dropped malformed heartbeat');
       return;
     }
     const hb = parsed.data;
+    // audit-9: a forged heartbeat for another vehicle would mask that
+    // vehicle's REAL link loss (ICD §9 feeds the safe-mode decision on this).
+    if (hb.vehicleId !== topicVehicle) {
+      this.logger.warn(`Dropped heartbeat claiming '${hb.vehicleId}' published from '${topicVehicle}' (spoof-safe binding).`);
+      return;
+    }
     this.lastHeartbeat.set(hb.vehicleId, Date.now());
     this.telemetryGateway.broadcastHeartbeat(hb.vehicleId, hb);
 

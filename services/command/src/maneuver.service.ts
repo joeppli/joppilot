@@ -68,15 +68,21 @@ export class ManeuverService implements OnModuleInit {
       this.logger.warn(`Dropped non-JSON maneuver message on ${topic}`);
       return;
     }
+    // audit-9: bind the payload's vehicleId to the mTLS/topic-policy-
+    // authenticated sender — a vehicle must not be able to open maneuver
+    // cards (or forge proposal EDR rows) on behalf of another vehicle.
+    const parts = topic.split('/');
+    const topicVehicle = parts[2] === 'vehicles' ? parts[3] : undefined;
+    if (!topicVehicle) return;
 
     if (topic.includes('/maneuver/proposal')) {
-      await this.handleProposal(msg);
+      await this.handleProposal(topicVehicle, msg);
     } else if (topic.includes('/maneuver/status')) {
-      await this.handleStatusUpdate(msg);
+      await this.handleStatusUpdate(topicVehicle, msg);
     }
   }
 
-  private async handleProposal(msg: unknown) {
+  private async handleProposal(topicVehicle: string, msg: unknown) {
     const parsed = ManeuverProposalSchema.safeParse(msg);
     if (!parsed.success) {
       this.logger.warn(`Invalid maneuver proposal received: ${JSON.stringify(parsed.error.issues)}`);
@@ -84,6 +90,10 @@ export class ManeuverService implements OnModuleInit {
     }
 
     const proposal = parsed.data;
+    if (proposal.vehicleId !== topicVehicle) {
+      this.logger.warn(`Dropped maneuver proposal claiming '${proposal.vehicleId}' published from '${topicVehicle}' (spoof-safe binding).`);
+      return;
+    }
     this.logger.log(`Maneuver proposal received: ${proposal.proposalId} (reason: ${proposal.reasonCode}, window: ${proposal.validityWindowMs}ms)`);
 
     // Cloud-side timeout tracker (UI/EDR only — edge is authoritative)
@@ -115,7 +125,7 @@ export class ManeuverService implements OnModuleInit {
     this.proposalListeners.forEach(fn => fn(proposal));
   }
 
-  private async handleStatusUpdate(msg: unknown) {
+  private async handleStatusUpdate(topicVehicle: string, msg: unknown) {
     const parsed = ManeuverProposalStatusUpdateSchema.safeParse(msg);
     if (!parsed.success) {
       this.logger.warn(`Invalid maneuver status update: ${JSON.stringify(parsed.error.issues)}`);
@@ -123,6 +133,10 @@ export class ManeuverService implements OnModuleInit {
     }
 
     const update = parsed.data;
+    if (update.vehicleId !== topicVehicle) {
+      this.logger.warn(`Dropped maneuver status claiming '${update.vehicleId}' published from '${topicVehicle}' (spoof-safe binding).`);
+      return;
+    }
     this.logger.log(`Maneuver status update: ${update.proposalId} → ${update.status}`);
 
     if (update.status === 'DECIDED' || update.status === 'TIMED_OUT' || update.status === 'CANCELLED') {

@@ -328,6 +328,23 @@
               "properties": {
                 "action": {
                   "type": "string",
+                  "const": "HAZARD_LIGHTS"
+                },
+                "on": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "action",
+                "on"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
                   "const": "STEER"
                 },
                 "angle": {
@@ -460,7 +477,6 @@
                     "OFF",
                     "LOW",
                     "HIGH",
-                    "HAZARD",
                     "BLINK_LEFT",
                     "BLINK_RIGHT"
                   ]

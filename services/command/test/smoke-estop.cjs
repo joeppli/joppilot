@@ -13,6 +13,7 @@
 // Run:      node services/command/test/smoke-estop.cjs
 const mqtt = require('mqtt');
 const http = require('http');
+const { signDoc } = require('./sign-helper.cjs'); // signed deadman pings (audit-9)
 
 const V = 'VEH-001';
 const T = {
@@ -76,7 +77,7 @@ client.on('message', (topic, message) => {
 client.on('connect', () => {
   client.subscribe([T.estop, T.cmd, T.ack, T.heartbeat], async () => {
     console.log('\n=== M3-3 E-STOP dual-message smoke test (ICD §3) ===\n');
-    const ping = setInterval(() => client.publish(T.deadman, JSON.stringify({ timestamp: Date.now() })), 800);
+    const ping = setInterval(() => client.publish(T.deadman, JSON.stringify(signDoc({ vehicleId: V, timestamp: Date.now() }))), 800);
 
     // ONE session for the whole run. The fencing lock lives 6 s (SEC-05) and
     // take-control is SET NX — re-taking while the lock is alive fails by

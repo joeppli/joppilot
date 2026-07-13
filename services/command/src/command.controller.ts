@@ -122,7 +122,14 @@ export class CommandController {
       // NOTE: this is the cloud → vehicle "deadman" ping. The vehicle → cloud
       // "I'm healthy" heartbeat (ICD §3) is a separate channel ingested by the
       // telemetry service.
-      this.mqttService.publish(`joppilot/v1/vehicles/${vehicleId}/deadman`, { timestamp: Date.now() });
+      // audit-9: SIGNED like a command (contract DeadmanPingSchema) — this is
+      // the one input that keeps the vehicle out of safe mode, so the edge
+      // refuses unsigned/foreign/stale pings (ICD §1: the link can be spoofed;
+      // an attacker must not be able to suppress the RES-01 watchdog).
+      this.mqttService.publish(
+        `joppilot/v1/vehicles/${vehicleId}/deadman`,
+        this.signing.signDocument({ vehicleId, timestamp: Date.now() }),
+      );
     }
     return { status: isAlive ? 'alive' : 'deadman_triggered' };
   }
