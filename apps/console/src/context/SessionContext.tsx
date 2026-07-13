@@ -106,7 +106,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // Active only when apps/console/.env.local carries the VITE_AWS_* values;
   // read-only by policy — commands still require the local/API command path.
   const cloud = useCloudTelemetry(awsConfig, vehicleId, {
-    onTelemetry: (p) => setTelemetry(p as TelemetryPayload),
+    // debug-level tap of every received sample (visible via the DevTools
+    // "Verbose" filter): stream anomalies — like the M3-4b duplicate-publisher
+    // hunt — are diagnosed by READING what actually arrives, not guessing.
+    onTelemetry: (p) => {
+      const t = p as TelemetryPayload;
+      console.debug('[cloud-telemetry]', t.location.lat.toFixed(6), t.location.lng.toFixed(6), t.vehicleState, 'ts=' + t.timestamp);
+      setTelemetry(t);
+    },
     onHeartbeat: () => {}, // latch state arrives via telemetry.vehicleState
     onProposal: (p) => handleProposal(p as ManeuverProposal),
     onStatus: (u) => handleProposalStatus(u as ManeuverProposalStatusUpdate),

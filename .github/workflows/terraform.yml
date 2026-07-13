@@ -25,6 +25,16 @@ on:
       - "infra/lambda/**"
       - ".github/workflows/terraform.yml"
   workflow_dispatch:
+    inputs:
+      replace_targets:
+        description: >-
+          Optional: space-separated resource addresses to force-replace
+          (terraform apply -replace=…). Use for credential rotation, e.g.
+          'module.iot.aws_iot_certificate.vehicle["VEH-001"]' — replacing an
+          IoT cert deactivates+deletes the old one (locking out every device
+          still holding it) and lands the new bundle in Secrets Manager.
+        required: false
+        default: ""
 
 permissions:
   id-token: write   # required to request the OIDC token
@@ -96,4 +106,9 @@ jobs:
 
       - name: Terraform apply
         if: ${{ vars.AWS_CI_ROLE_ARN != '' && github.event_name != 'pull_request' }}
-        run: terraform apply -input=false -auto-approve
+        env:
+          REPLACE_TARGETS: ${{ inputs.replace_targets }}
+        run: |
+          FLAGS=""
+          for t in $REPLACE_TARGETS; do FLAGS="$FLAGS -replace=$t"; done
+          terraform apply -input=false -auto-approve $FLAGS
