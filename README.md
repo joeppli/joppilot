@@ -244,14 +244,23 @@ its DNS name no longer answers from the internet, and API Gateway is the **only*
 public entry point. Each task SG accepts traffic only from the ALB SG; the DB and
 Valkey SGs accept only the task SGs (SEC-04).
 
-> **Console ↔ cloud (M3-4b):** LIVE TELEMETRY now flows to the console straight
+> **Console ↔ cloud (M3-4b):** LIVE TELEMETRY flows to the console straight
 > from IoT Core over WSS — copy `apps/console/.env.example` → `.env.local`,
 > fill it from the terraform outputs, `pnpm dev`, then **Sign in (AWS)** in the
-> header (Cognito Hosted UI + MFA). Read-only by construction: the viewer role
-> cannot publish, so **commands/take-control still need the local services**
-> (wiring `cmdPost` to the API Gateway comes with the CloudFront/SPA phase).
-> DEV-23: after the first sign-in, attach the IoT policy to your identity once
-> (command in `.env.example`).
+> header (Cognito Hosted UI + MFA). The IoT WSS path is read-only by
+> construction (the viewer role cannot publish). DEV-23: after the first
+> sign-in, attach the IoT policy to your identity once (command in `.env.example`).
+>
+> **Command-capable console (M3-4c):** set `VITE_AWS_API_ENDPOINT=<api_endpoint>`
+> in `.env.local` to ALSO **drive from the browser** — take-control / steering /
+> E-STOP / maneuver decisions POST to the cloud command service through the API
+> Gateway with your Cognito **ID token**; `operatorId` is your Cognito username
+> (identity binding, LEG-05). Needs the API Gateway CORS for your origin
+> (terraform `console_origins`, applied), a one-time admin **assign** of your
+> username to the vehicle (`ASSIGNMENT_ENFORCEMENT` is on) and a Mode-2 **zone**
+> (see `edge/README-vehicle.md`). Leave `VITE_AWS_API_ENDPOINT` blank to keep
+> commands on the local command service. This brings the command half of the
+> CloudFront/SPA phase forward; only SPA hosting on CloudFront remains.
 
 ### Test the cloud stack
 

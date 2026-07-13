@@ -2,12 +2,32 @@ import { createContext, useContext, useState, useEffect, useRef, useCallback, Re
 import { io, Socket } from 'socket.io-client';
 import { TelemetryPayload, ManeuverProposal, ManeuverProposalStatusUpdate, CheckItem } from '@joppilot/contract';
 import { awsConfig } from '../aws/config';
+import { getTokens, getUsername } from '../aws/auth';
 import { useCloudTelemetry, CloudState } from '../aws/useCloudTelemetry';
 
-const COMMAND_API = 'http://127.0.0.1:4000';
-const FLEET_API = 'http://127.0.0.1:4002';
 const TELEMETRY_WS = 'http://localhost:4001';
 const COMMAND_WS = 'http://localhost:4000';
+
+// M3-4c: where the command / maneuver / fleet REST calls go. In cloud-command
+// mode (awsConfig.apiEndpoint set) everything routes through the ONE API
+// Gateway (it path-routes /api/command, /api/maneuver, /api/fleet); otherwise
+// the local dev services (command 4000, fleet 4002) are used as before.
+const cloudApi = awsConfig?.apiEndpoint;
+const COMMAND_API = cloudApi ?? 'http://127.0.0.1:4000';
+const FLEET_API = cloudApi ?? 'http://127.0.0.1:4002';
+
+/** JSON headers + the Cognito Bearer token when driving the cloud (M3-4c). */
+function apiHeaders(): Record<string, string> {
+  const h: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (cloudApi) {
+    const t = getTokens();
+    // Send the ID token: the API Gateway JWT authorizer checks `aud` (= client
+    // id), which access tokens lack, and the services read cognito:groups /
+    // cognito:username from it (RBAC + identity binding).
+    if (t) h['Authorization'] = `Bearer ${t.idToken}`;
+  }
+  return h;
+}
 
 export type ConnState = 'connecting' | 'connected' | 'disconnected';
 
@@ -60,7 +80,10 @@ export function useSession(): SessionValue {
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const vehicleId = 'VEH-001';
-  const [operatorId] = useState(`OP-${Math.floor(Math.random() * 1000)}`);
+  // In cloud-command mode the operatorId MUST equal the signed-in Cognito
+  // username (identity binding, LEG-05) — else take-control 403s. Local dev
+  // has no identity provider, so a random id is fine there.
+  const [operatorId] = useState(() => (cloudApi && getUsername()) || `OP-${Math.floor(Math.random() * 1000)}`);
   const [token, setToken] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnState>('connecting');
   const [telemetry, setTelemetry] = useState<TelemetryPayload | null>(null);
@@ -145,7 +168,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       heartbeatRef.current = window.setInterval(async () => {
         try {
           const r = await fetch(`${COMMAND_API}/api/command/${vehicleId}/heartbeat`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: apiHeaders(),
             body: JSON.stringify({ operatorId, token }),
           });
           const d = await r.json();
@@ -162,7 +185,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const cmdPost = useCallback(async (path: string, body: object = {}) => {
     if (!token) return null;
     const r = await fetch(`${COMMAND_API}/api/command/${vehicleId}/${path}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: apiHeaders(),
       body: JSON.stringify({ operatorId, token, ...body }),
     });
     if (r.status === 401) { setToken(null); return null; }
@@ -175,7 +198,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (!token) return null;
     try {
       const r = await fetch(`${FLEET_API}/api/fleet${path}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: apiHeaders(),
         body: JSON.stringify({ operatorId, token, ...(body ?? {}) }),
       });
       return r.ok ? r.json() : null;
@@ -183,13 +206,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [token, operatorId]);
 
   const fleetGet = useCallback(async (path: string) => {
-    try { const r = await fetch(`${FLEET_API}/api/fleet${path}`); return r.ok ? r.json() : null; }
+    try { const r = await fetch(`${FLEET_API}/api/fleet${path}`, { headers: apiHeaders() }); return r.ok ? r.json() : null; }
     catch { return null; }
   }, []);
 
   const takeControl = useCallback(async () => {
     const r = await fetch(`${COMMAND_API}/api/command/${vehicleId}/take-control`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: apiHeaders(),
       body: JSON.stringify({ operatorId }),
     });
     if (r.ok) { const d = await r.json(); setToken(d.token); }
@@ -200,7 +223,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const decideManeuver = useCallback(async (decision: 'CONFIRM' | 'REJECT' | 'SELECT_ALTERNATIVE', optionId?: string) => {
     if (!activeProposal || !token) return;
     await fetch(`${COMMAND_API}/api/maneuver/${activeProposal.proposalId}/decide`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: apiHeaders(),
       body: JSON.stringify({ operatorId, token, decision, optionId }),
     });
   }, [activeProposal, token, operatorId]);

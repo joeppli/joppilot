@@ -68,6 +68,10 @@ module "apigw" {
   alb_listener_arn   = module.alb.listener_arn
   cognito_issuer_url = module.cognito.issuer_url
   cognito_client_id  = module.cognito.client_id
+  # M3-4c: let the operator console (cross-origin SPA) call the API with its
+  # Cognito Bearer token. Dev origin only; add the CloudFront domain with the
+  # SPA hosting phase (AD-19).
+  cors_allow_origins = var.console_origins
 }
 
 # --- M2-3c-2: VPC endpoints — private AWS API access for the private ECS task ---

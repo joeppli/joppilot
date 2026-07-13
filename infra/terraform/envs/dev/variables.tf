@@ -39,6 +39,12 @@ variable "cognito_logout_urls" {
   default     = ["http://localhost:3000"]
 }
 
+variable "console_origins" {
+  description = "Browser origins allowed to call the API with CORS (M3-4c — the console SPA sends commands with a Cognito Bearer token). Mirror cognito_callback_urls; add the CloudFront domain with the SPA hosting phase (AD-19)."
+  type        = list(string)
+  default     = ["http://localhost:3000"]
+}
+
 variable "enable_waf" {
   description = "Attach the WAF WebACL to the ALB (~$6/mo). Set false to save cost while the dev stack is idle."
   type        = bool
