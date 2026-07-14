@@ -91,6 +91,18 @@ resource "aws_apigatewayv2_route" "proxy" {
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
 }
 
+# AWS-documented CORS fix (verified live 2026-07-14): the JWT-protected
+# catch-all above also catches preflight OPTIONS and 401s them before the
+# API-level cors_configuration can answer. This higher-priority OPTIONS route
+# WITHOUT auth lets preflights through; API Gateway's CORS config then answers
+# valid ones automatically (a non-preflight OPTIONS falls through to the ALB).
+resource "aws_apigatewayv2_route" "cors_preflight" {
+  api_id             = aws_apigatewayv2_api.this.id
+  route_key          = "OPTIONS /{proxy+}"
+  target             = "integrations/${aws_apigatewayv2_integration.alb.id}"
+  authorization_type = "NONE"
+}
+
 # Auto-deploying default stage → the api_endpoint is directly invokable.
 resource "aws_apigatewayv2_stage" "default" {
   api_id      = aws_apigatewayv2_api.this.id
