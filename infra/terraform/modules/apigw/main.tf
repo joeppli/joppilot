@@ -79,11 +79,13 @@ resource "aws_apigatewayv2_integration" "alb" {
   connection_id      = aws_apigatewayv2_vpc_link.this.id
 }
 
-# Catch-all route (matches every method + path, including "/"), protected by the
-# Cognito authorizer.
+# Catch-all route protected by the Cognito authorizer. Deliberately NOT
+# "$default": the automatic CORS preflight response skips routing EXCEPT for
+# $default, where the OPTIONS request would reach the JWT authorizer and 401 —
+# blocking every browser call. "ANY /{proxy+}" matches everything but "/".
 resource "aws_apigatewayv2_route" "proxy" {
   api_id             = aws_apigatewayv2_api.this.id
-  route_key          = "$default"
+  route_key          = "ANY /{proxy+}"
   target             = "integrations/${aws_apigatewayv2_integration.alb.id}"
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
