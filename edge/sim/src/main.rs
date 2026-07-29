@@ -1051,6 +1051,10 @@ async fn main() {
                 ("ROAD_BLOCKED", "Parked vehicle blocking the route", "CAM_FRONT"),
             ];
             let mut scenario_idx = 0;
+            // Minimum gap between proposals so the operator isn't spammed —
+            // a new proposal is offered at most once every PROPOSAL_MIN_GAP_MS.
+            const PROPOSAL_MIN_GAP_MS: u64 = 120_000; // 2 minutes
+            let mut last_proposal_at: u64 = 0;
 
             loop {
                 interval.tick().await;
@@ -1089,9 +1093,15 @@ async fn main() {
                     continue;
                 }
 
-                // Generate a new proposal every ~20s (simulated ADS escalation)
-                // The interval is 2s but we only generate when there's no active proposal,
-                // so effective cadence is ~validityWindowMs + 2s between proposals
+                // Rate-limit: no active proposal here, but only escalate a new
+                // one once PROPOSAL_MIN_GAP_MS has passed since the last one —
+                // otherwise a quick operator decision would immediately spawn
+                // the next proposal (effective cadence was ~validityWindow+2s).
+                if now_ms() < last_proposal_at + PROPOSAL_MIN_GAP_MS {
+                    continue;
+                }
+                last_proposal_at = now_ms();
+
                 let (reason, summary, sensor) = scenarios[scenario_idx % scenarios.len()];
                 scenario_idx += 1;
 
