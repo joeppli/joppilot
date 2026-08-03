@@ -1,6 +1,7 @@
 import { Card, CardHeader, Button, Badge } from '../components/ui';
 import { useSession } from '../context/SessionContext';
 import { ZONE_MODE_MATRIX } from '@joppilot/contract';
+import { TeleopPanel } from '../teleop/TeleopPanel';
 
 export function Operations() {
   const { telemetry: t, hasControl, operatorId, vehicleId, token, takeControl, cmdPost, estop } = useSession();
@@ -90,6 +91,10 @@ export function Operations() {
             {!token && <Button block onClick={takeControl} style={{ marginTop: 12 }}>Take control</Button>}
           </div>
         </Card>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <TeleopPanel />
       </div>
     </div>
   );
