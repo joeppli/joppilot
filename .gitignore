@@ -6,6 +6,11 @@
 
 # ── Docs ──────────────────────────────────────────────────────
 # .claude/  -> authoritative docs (ICD, architecture, constraints): TRACKED on purpose.
+# .claude/settings.json -> EXCEPTION: per-machine Claude Code permissions
+#   (session scratchpad paths, versioned skill dirs). Personal settings
+#   belong in .claude/settings.local.json.
+.claude/settings.json
+.claude/settings.local.json
 # .supp_docs/ -> supplementary material (translations, pdfs, decks): kept out of VCS.
 .supp_docs/
 
