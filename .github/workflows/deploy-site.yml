@@ -1,0 +1,106 @@
+name: deploy-site
+
+# What this does:
+#   - On a pull request that touches the console (or the contract package it
+#     depends on): build the static bundle (the merge gate — site must compile).
+#   - On push to main that touches them: build + deploy to GitHub Pages.
+#   - Manual run available via the "Run workflow" button.
+#
+# One-time setup (like AWS_CI_ROLE_ARN for terraform.yml):
+#   - Settings -> Pages -> Source must be set to "GitHub Actions" once, or the
+#     deploy job fails with "Pages not enabled".
+#   - The custom domain (pilot.joeppli.ch) lives in Settings -> Pages, NOT here;
+#     with Actions-based publishing no CNAME file is needed in the artifact.
+#     The bundle is built for the domain root (Vite base "/"), so the site is
+#     NOT servable from the joeppli.github.io/joppilot fallback URL.
+#
+# Config: the VITE_* values are repo VARIABLES (Settings -> Secrets and
+# variables -> Actions -> Variables), filled from the terraform outputs — same
+# values as apps/console/.env.example. They are public-by-design identifiers
+# (they ship in the JS bundle), not secrets. If they are unset the build still
+# succeeds: src/aws/config.ts gates cloud mode on all six core values being
+# present, so the deployed console falls back to a pure-localhost client.
+
+on:
+  pull_request:
+    paths:
+      - "apps/console/**"
+      - "packages/contract/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/deploy-site.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/console/**"
+      - "packages/contract/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/deploy-site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Deploys queue rather than cancel: a deploy already in flight finishes, then
+# the newest queued one runs (same policy as terraform.yml's apply).
+concurrency:
+  group: deploy-site-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm@11 to match the Dockerfile builder stage.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # turbo's `dependsOn: ["^build"]` builds @joppilot/contract first — the
+      # console imports it as a compiled workspace package.
+      - name: Build console
+        env:
+          VITE_AWS_REGION: ${{ vars.VITE_AWS_REGION }}
+          VITE_COGNITO_DOMAIN: ${{ vars.VITE_COGNITO_DOMAIN }}
+          VITE_COGNITO_USER_POOL_ID: ${{ vars.VITE_COGNITO_USER_POOL_ID }}
+          VITE_COGNITO_CLIENT_ID: ${{ vars.VITE_COGNITO_CLIENT_ID }}
+          VITE_IDENTITY_POOL_ID: ${{ vars.VITE_IDENTITY_POOL_ID }}
+          VITE_AWS_IOT_ENDPOINT: ${{ vars.VITE_AWS_IOT_ENDPOINT }}
+          VITE_AWS_API_ENDPOINT: ${{ vars.VITE_AWS_API_ENDPOINT }}
+        run: pnpm exec turbo run build --filter=console
+
+      # GitHub Pages has no rewrite rules, so a BrowserRouter deep link
+      # (e.g. /vehicles/VEH-001) 404s on refresh. Serving the app as the 404
+      # page lets the router recover the path client-side.
+      - name: Add SPA fallback
+        run: cp apps/console/dist/index.html apps/console/dist/404.html
+
+      - name: Upload Pages artifact
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/console/dist
+
+  deploy:
+    if: ${{ github.event_name != 'pull_request' }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # deploy to Pages
+      id-token: write # verify the deployment originates from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
