@@ -27,7 +27,28 @@ set -euo pipefail
 
 # ---- settings you may change -------------------------------------------------
 REGION="eu-central-1"
-GITHUB_REPO="senagolcuk/joppilot"          # owner/repo that GitHub Actions runs from
+# The repository GitHub Actions runs from — by name AND by numeric id. These land
+# verbatim in the role's trust policy, so they are not cosmetic:
+#
+#   GitHub mints an OIDC token whose `sub` claim names the repository. The plain
+#   form is "repo:<owner>/<repo>:ref:...", but an organization can turn on
+#   IMMUTABLE IDENTIFIERS in OIDC subject claims — joeppli has this ON — and the
+#   claim then reads "repo:<owner>@<ownerId>/<repo>@<repoId>:ref:...". The trust
+#   policy below allows BOTH shapes, so flipping that org toggle cannot lock CI
+#   out of AWS, and the id-bearing form keeps working across renames.
+#
+#   A transfer (senagolcuk -> joeppli, 2026-08-24) changes the NAMES; the ids are
+#   stable. A trust policy that no longer matches fails every AWS workflow at the
+#   "Configure AWS credentials (OIDC)" step with:
+#     "Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity"
+#   Fix: correct the four values below and re-run this script — the bucket, lock
+#   table and OIDC provider are skipped as already-existing, only the trust policy
+#   is rewritten. README.md has a recipe that prints the claims a run actually
+#   presents, so you match the policy against reality instead of guessing.
+GITHUB_OWNER="joeppli"
+GITHUB_OWNER_ID="319062959"
+GITHUB_REPO_NAME="joppilot"
+GITHUB_REPO_ID="1266196407"
 ROLE_NAME="joppilot-ci-dev"
 LOCK_TABLE="joppilot-tfstate-lock"
 # DEV ONLY: the CI role gets AdministratorAccess so Terraform can create anything
@@ -96,7 +117,10 @@ TRUST=$(cat <<JSON
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": {
       "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
-      "StringLike":  { "token.actions.githubusercontent.com:sub": "repo:${GITHUB_REPO}:*" }
+      "StringLike":  { "token.actions.githubusercontent.com:sub": [
+        "repo:${GITHUB_OWNER}/${GITHUB_REPO_NAME}:*",
+        "repo:${GITHUB_OWNER}@${GITHUB_OWNER_ID}/${GITHUB_REPO_NAME}@${GITHUB_REPO_ID}:*"
+      ] }
     }
   }]
 }
