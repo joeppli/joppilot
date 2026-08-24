@@ -1,0 +1,50 @@
+name: oidc-debug
+
+# TEMPORARY diagnostic — delete this file once the OIDC trust works again.
+#
+# Prints the CLAIMS of the OIDC token this repository mints (never the token
+# itself — that is a bearer credential). Three claims decide whether AWS allows
+# sts:AssumeRoleWithWebIdentity, and a repository transfer can break any of them:
+#
+#   iss  must equal the URL of the IAM OIDC provider in the AWS account, i.e.
+#        https://token.actions.githubusercontent.com. A GitHub Enterprise with
+#        "unique token URLs" appends an enterprise slug — a different issuer,
+#        so the existing provider no longer matches and every assume is denied.
+#   aud  must equal what the trust policy pins (sts.amazonaws.com). This is what
+#        aws-actions/configure-aws-credentials requests by default.
+#   sub  must match the trust policy's StringLike pattern (repo:<owner>/<repo>:*).
+#        An org-level custom sub-claim template changes the SHAPE of this string
+#        (e.g. leading with a different key), not just the owner segment.
+#
+# Compare the output against the role:
+#   aws iam get-role --role-name joppilot-ci-dev \
+#     --query 'Role.AssumeRolePolicyDocument.Statement[0]'
+#   aws iam list-open-id-connect-providers
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print OIDC token claims
+        run: |
+          token=$(curl -sS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+
+          # A JWT is header.payload.signature in base64url. Decode the payload
+          # only, restoring the '=' padding base64url strips.
+          payload=$(printf '%s' "$token" | cut -d. -f2 | tr '_-' '/+')
+          case $(( ${#payload} % 4 )) in
+            2) payload="${payload}==" ;;
+            3) payload="${payload}=" ;;
+          esac
+
+          printf '%s' "$payload" | base64 -d \
+            | jq '{iss, aud, sub, repository, repository_owner, repository_id}'
