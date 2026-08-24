@@ -27,7 +27,15 @@ set -euo pipefail
 
 # ---- settings you may change -------------------------------------------------
 REGION="eu-central-1"
-GITHUB_REPO="senagolcuk/joppilot"          # owner/repo that GitHub Actions runs from
+# owner/repo that GitHub Actions runs from. This string ends up VERBATIM in the
+# role's trust policy (`sub` = "repo:<owner>/<repo>:..."), so it is not cosmetic:
+# if the repository is ever transferred (owner rename, move into an org — done
+# on 2026-08-24, senagolcuk -> joeppli), the OIDC token starts carrying the NEW
+# owner and every workflow fails with
+#   "Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity".
+# Fix = update this line and re-run the script (it only rewrites the trust policy;
+# bucket/table/provider are skipped as already-existing).
+GITHUB_REPO="joeppli/joppilot"
 ROLE_NAME="joppilot-ci-dev"
 LOCK_TABLE="joppilot-tfstate-lock"
 # DEV ONLY: the CI role gets AdministratorAccess so Terraform can create anything
