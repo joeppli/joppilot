@@ -28,21 +28,21 @@ variable "hello_world_desired_count" {
 }
 
 variable "cognito_callback_urls" {
-  description = "Allowed OAuth redirect URLs for the console SPA. Add the CloudFront URL once the SPA is deployed; localhost:3000 matches the console dev server port (apps/console/vite.config.ts)."
+  description = "Allowed OAuth redirect URLs for the console SPA. pilot.joeppli.ch is the deployed console (GitHub Pages, deploy-site.yml); localhost:3000 matches the console dev server port (apps/console/vite.config.ts)."
   type        = list(string)
-  default     = ["http://localhost:3000"]
+  default     = ["http://localhost:3000", "https://pilot.joeppli.ch"]
 }
 
 variable "cognito_logout_urls" {
-  description = "Allowed sign-out redirect URLs for the console SPA (port must match the console dev server, see cognito_callback_urls)."
+  description = "Allowed sign-out redirect URLs for the console SPA (same origins rule as cognito_callback_urls)."
   type        = list(string)
-  default     = ["http://localhost:3000"]
+  default     = ["http://localhost:3000", "https://pilot.joeppli.ch"]
 }
 
 variable "console_origins" {
-  description = "Browser origins allowed to call the API with CORS (M3-4c — the console SPA sends commands with a Cognito Bearer token). Mirror cognito_callback_urls; add the CloudFront domain with the SPA hosting phase (AD-19)."
+  description = "Browser origins allowed to call the API with CORS (M3-4c — the console SPA sends commands with a Cognito Bearer token). Mirrors cognito_callback_urls."
   type        = list(string)
-  default     = ["http://localhost:3000"]
+  default     = ["http://localhost:3000", "https://pilot.joeppli.ch"]
 }
 
 variable "enable_waf" {

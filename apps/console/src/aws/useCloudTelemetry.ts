@@ -32,7 +32,17 @@ export function useCloudTelemetry(
   vehicleId: string,
   handlers: CloudHandlers,
 ): { state: CloudState; signIn: () => void; signOut: () => void } {
-  const [state, setState] = useState<CloudState>(cfg ? 'signed-out' : 'off');
+  // Seeding matters for the App.tsx login gate: the boot effect below is
+  // async, so a signed-in reload (tokens already in sessionStorage) or a
+  // Hosted-UI redirect mid-exchange (?code= in the URL) would otherwise start
+  // as 'signed-out' and flash the login screen before snapping to the console.
+  const [state, setState] = useState<CloudState>(() =>
+    !cfg
+      ? 'off'
+      : getTokens() || new URLSearchParams(window.location.search).has('code')
+        ? 'connecting'
+        : 'signed-out',
+  );
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
   const clientRef = useRef<MqttClient | null>(null);
