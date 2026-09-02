@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { SessionProvider } from './context/SessionContext';
+import { ModeProvider, useMode } from './mode/ModeContext';
+import { EntryGate } from './mode/EntryGate';
 import { AppShell } from './components/layout/AppShell';
 import { Dashboard } from './pages/Dashboard';
 import { MapDispatch } from './pages/MapDispatch';
@@ -14,11 +16,33 @@ import './components/layout/layout.css';
 
 export default function App() {
   return (
+    <ModeProvider>
+      <Gated />
+    </ModeProvider>
+  );
+}
+
+/**
+ * Nothing renders until a mode is chosen.
+ *
+ * The gate is a MOUNT boundary, not a visual overlay: SessionProvider — which
+ * owns every socket, poll and AWS call — is not constructed at all while the
+ * gate is up. A visitor who never picks a mode therefore causes no network
+ * traffic of any kind.
+ */
+function Gated() {
+  const { mode } = useMode();
+  if (!mode) return <EntryGate />;
+
+  return (
     <SessionProvider>
       <BrowserRouter>
         <Routes>
           <Route element={<AppShell />}>
-            <Route path="/" element={<Dashboard />} />
+            {/* A demo visitor came to watch a vehicle move, so they land on the
+                map rather than on a dashboard of cards. Operators keep the
+                dashboard as their landing page. */}
+            <Route path="/" element={mode === 'demo' ? <Navigate to="/map" replace /> : <Dashboard />} />
             <Route path="/map" element={<MapDispatch />} />
             <Route path="/vehicles" element={<Vehicles />} />
             <Route path="/operations" element={<Operations />} />

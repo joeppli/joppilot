@@ -1,0 +1,117 @@
+/* ──────────────────────────────────────────────────────────────
+   Entry gate — the sign-in / demo chooser shown before the app.
+   Tokens come from theme/tokens.css; nothing here hard-codes a
+   colour that the theme also defines.
+   ────────────────────────────────────────────────────────────── */
+
+.entry {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px;
+  background: var(--bg-app);
+}
+
+.entry-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.entry-head { display: flex; flex-direction: column; gap: 4px; }
+
+.entry-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-extra);
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.entry-tagline {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.entry-section { display: flex; flex-direction: column; gap: 10px; }
+
+.entry-label {
+  margin: 0;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.entry-hint {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* Unavailable is stated in WORDS (see the string), not by colour alone —
+   ACC-03 [M]. The tint only reinforces what the sentence already says. */
+.entry-hint-blocked {
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.entry-btn {
+  width: 100%;
+  padding: 12px 18px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-family: inherit;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+/* WCAG 2.4.7 — every control keeps a clearly visible keyboard focus ring.
+   Never remove this without replacing it. */
+.entry-btn:focus-visible {
+  outline: 3px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.entry-btn-primary { background: var(--color-primary); color: var(--text-inverse); }
+.entry-btn-primary:hover { background: var(--color-primary-hover); }
+
+.entry-btn-demo {
+  background: var(--bg-surface);
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+.entry-btn-demo:hover { background: var(--color-primary-soft); }
+
+.entry-btn-ghost {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border-color: var(--border-strong);
+  font-weight: var(--fw-medium);
+}
+.entry-btn-ghost:hover { background: var(--bg-inset); color: var(--text-primary); }
+
+.entry-divider { height: 1px; background: var(--border); }
+
+.entry-section-dev { padding-top: 8px; border-top: 1px dashed var(--border); }
+
+/* ACC-02 [M]: at 200% zoom the card stops being a fixed panel and simply
+   flows, so no control is clipped or unreachable. */
+@media (max-width: 480px) {
+  .entry { padding: 16px 12px; align-items: flex-start; }
+  .entry-card { padding: 24px 18px; border-radius: 10px; }
+}

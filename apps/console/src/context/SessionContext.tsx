@@ -4,6 +4,8 @@ import { TelemetryPayload, ManeuverProposal, ManeuverProposalStatusUpdate, Check
 import { awsConfig } from '../aws/config';
 import { getTokens, getUsername } from '../aws/auth';
 import { useCloudTelemetry, CloudState } from '../aws/useCloudTelemetry';
+import { useMode } from '../mode/ModeContext';
+import { useDemoVehicle } from '../demo/simulator';
 
 const TELEMETRY_WS = 'http://localhost:4001';
 const COMMAND_WS = 'http://localhost:4000';
@@ -79,6 +81,14 @@ export function useSession(): SessionValue {
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
+  // The mode was chosen at the entry gate and decides which data source (if
+  // any) this session is allowed to open. 'demo' opens NOTHING: no socket, no
+  // fetch, no AWS credential — the simulator is entirely in the browser.
+  const { mode } = useMode();
+  const isDemo = mode === 'demo';
+  const isOperator = mode === 'operator';
+  const isLocal = mode === 'local';
+
   const vehicleId = 'VEH-001';
   // In cloud-command mode the operatorId MUST equal the signed-in Cognito
   // username (identity binding, LEG-05) — else take-control 403s. Local dev
@@ -128,7 +138,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // ── Cloud mode (M3-4b): live WSS straight from IoT Core ──
   // Active only when apps/console/.env.local carries the VITE_AWS_* values;
   // read-only by policy — commands still require the local/API command path.
-  const cloud = useCloudTelemetry(awsConfig, vehicleId, {
+  // Passing null keeps the hook fully inert — no Cognito exchange, no identity
+  // credentials, no WSS dial. Demo and local sessions never reach AWS.
+  const cloud = useCloudTelemetry(isOperator ? awsConfig : null, vehicleId, {
     // debug-level tap of every received sample (visible via the DevTools
     // "Verbose" filter): stream anomalies — like the M3-4b duplicate-publisher
     // hunt — are diagnosed by READING what actually arrives, not guessing.
@@ -143,9 +155,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   });
 
   useEffect(() => {
-    if (!awsConfig) return;
+    if (!isOperator || !awsConfig) return;
     setConnection(cloud.state === 'live' ? 'connected' : cloud.state === 'connecting' ? 'connecting' : 'disconnected');
-  }, [cloud.state]);
+  }, [cloud.state, isOperator]);
+
+  // ── Demo mode: the vehicle is simulated in this tab ──
+  // The hook always runs (hooks cannot be conditional) but its output is only
+  // published into `telemetry` for a demo session, so an operator session is
+  // untouched by it.
+  const demo = useDemoVehicle(vehicleId);
+
+  useEffect(() => {
+    if (!isDemo) return;
+    // A demo session has no link to lose, so it is "connected" from the first
+    // frame — and telemetry is available immediately, which is what stops the
+    // map from sitting on "Waiting for telemetry…".
+    setConnection('connected');
+    setTelemetry(demo.telemetry);
+  }, [isDemo, demo.telemetry]);
 
   // Correct operatorId once the Hosted-UI sign-in completes. The username is
   // only readable AFTER completeLoginIfRedirected has stored the tokens (async,
@@ -155,14 +182,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // available; without this a FRESH sign-in would drive with the random id and
   // the cloud would reject it (403 IDENTITY_MISMATCH, LEG-05 identity binding).
   useEffect(() => {
-    if (!cloudApi) return;
+    if (!isOperator || !cloudApi) return;
     const u = getUsername();
     if (u && u !== operatorId) setOperatorId(u);
-  }, [cloud.state, operatorId]);
+  }, [cloud.state, operatorId, isOperator]);
 
-  // ── Local sockets (skipped entirely in cloud mode) ──
+  // ── Local sockets (developer mode ONLY) ──
+  // Gated on the MODE, not on the absence of cloud config: these sockets point
+  // at 127.0.0.1, so on a publicly served page they would be a public site
+  // reaching into the visitor's own machine — a browser local-network
+  // permission prompt and nothing working. The entry gate only offers local
+  // mode from a localhost origin (see mode.ts), so this can never fire there.
   useEffect(() => {
-    if (awsConfig) return; // cloud console: telemetry comes over IoT WSS above
+    if (!isLocal) return;
     const telSock: Socket = io(TELEMETRY_WS);
     const cmdSock: Socket = io(COMMAND_WS);
     telSock.on('connect', () => setConnection('connected'));
@@ -173,10 +205,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     cmdSock.on(`maneuver/proposal/${vehicleId}`, handleProposal);
     cmdSock.on(`maneuver/status/${vehicleId}`, handleProposalStatus);
     return () => { telSock.disconnect(); cmdSock.disconnect(); };
-  }, [vehicleId, handleProposal, handleProposalStatus]);
+  }, [vehicleId, handleProposal, handleProposalStatus, isLocal]);
 
   // ── Heartbeat (deadman) ──
   useEffect(() => {
+    if (isDemo) return; // no server to keep alive; the simulator owns the latch
     if (token) {
       heartbeatRef.current = window.setInterval(async () => {
         try {
@@ -192,10 +225,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       clearInterval(heartbeatRef.current);
     }
     return () => { if (heartbeatRef.current) clearInterval(heartbeatRef.current); };
-  }, [token, operatorId, vehicleId]);
+  }, [token, operatorId, vehicleId, isDemo]);
 
   // ── API helpers ──
+  // Every network helper below carries the same demo guard. Guarding here
+  // rather than at the call sites is deliberate: it makes "a demo session
+  // performs no network I/O" a property of this file that a reader can verify
+  // in one place, instead of an invariant spread across every button.
   const cmdPost = useCallback(async (path: string, body: object = {}) => {
+    // Demo: the command is applied by the in-tab simulator instead of being
+    // sent anywhere. Holding control is still required, so the demo shows the
+    // real gating (a session without the token cannot command a vehicle).
+    if (isDemo) { if (token) demo.command(path, body); return null; }
     if (!token) return null;
     const r = await fetch(`${COMMAND_API}/api/command/${vehicleId}/${path}`, {
       method: 'POST', headers: apiHeaders(),
@@ -203,12 +244,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     });
     if (r.status === 401) { setToken(null); return null; }
     return r.json();
-  }, [token, operatorId, vehicleId]);
+  }, [token, operatorId, vehicleId, isDemo, demo.command]);
 
   // Fleet workflows are operator actions on the vehicle: every mutating call
   // carries the fencing token (SEC-05) — the fleet service rejects it otherwise.
   const fleetPost = useCallback(async (path: string, body?: object) => {
-    if (!token) return null;
+    if (isDemo || !token) return null;
     try {
       const r = await fetch(`${FLEET_API}/api/fleet${path}`, {
         method: 'POST', headers: apiHeaders(),
@@ -216,30 +257,35 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       });
       return r.ok ? r.json() : null;
     } catch { return null; }
-  }, [token, operatorId]);
+  }, [token, operatorId, isDemo]);
 
   const fleetGet = useCallback(async (path: string) => {
+    if (isDemo) return null;
     try { const r = await fetch(`${FLEET_API}/api/fleet${path}`, { headers: apiHeaders() }); return r.ok ? r.json() : null; }
     catch { return null; }
-  }, []);
+  }, [isDemo]);
 
   const takeControl = useCallback(async () => {
+    // A demo session holds a LOCAL token: it exists only so the UI can show the
+    // controlled state, and no cloud ever issues or validates it. The real
+    // fencing token (SEC-05) is never minted outside an authenticated session.
+    if (isDemo) { setToken('demo-local-session'); return; }
     const r = await fetch(`${COMMAND_API}/api/command/${vehicleId}/take-control`, {
       method: 'POST', headers: apiHeaders(),
       body: JSON.stringify({ operatorId }),
     });
     if (r.ok) { const d = await r.json(); setToken(d.token); }
-  }, [operatorId, vehicleId]);
+  }, [operatorId, vehicleId, isDemo]);
 
   const estop = useCallback(() => { cmdPost('estop'); }, [cmdPost]);
 
   const decideManeuver = useCallback(async (decision: 'CONFIRM' | 'REJECT' | 'SELECT_ALTERNATIVE', optionId?: string) => {
-    if (!activeProposal || !token) return;
+    if (isDemo || !activeProposal || !token) return;
     await fetch(`${COMMAND_API}/api/maneuver/${activeProposal.proposalId}/decide`, {
       method: 'POST', headers: apiHeaders(),
       body: JSON.stringify({ operatorId, token, decision, optionId }),
     });
-  }, [activeProposal, token, operatorId]);
+  }, [activeProposal, token, operatorId, isDemo]);
 
   // ── Mission ──
   const createMission = useCallback(async () => {
@@ -274,15 +320,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const dismissMission = useCallback(() => { setMission(null); setCheckItems([]); }, []);
 
-  // Load active mission on mount
+  // Load active mission on mount (skipped in demo — fleetGet is inert there,
+  // but returning early keeps the intent obvious: a demo session asks the
+  // network for nothing at all, not even on first paint).
   useEffect(() => {
+    if (isDemo) return;
     fleetGet(`/${vehicleId}/mission`).then(d => {
       if (d?.id) {
         setMission({ missionId: d.id, status: d.status, checklistId: d.checklistId });
         if (d.checklist?.items) setCheckItems(d.checklist.items);
       }
     });
-  }, [fleetGet, vehicleId]);
+  }, [fleetGet, vehicleId, isDemo]);
 
   // ── E-STOP keyboard (ACC-04) ──
   // Space is also the standard activation key for a focused control. The
