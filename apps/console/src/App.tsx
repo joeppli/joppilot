@@ -9,6 +9,7 @@ import { Vehicles } from './pages/Vehicles';
 import { Operations } from './pages/Operations';
 import { Stub } from './pages/Stub';
 
+import './theme/fonts.css';
 import './theme/tokens.css';
 import './theme/base.css';
 import './components/ui/ui.css';

@@ -4,7 +4,7 @@ import { ZONE_MODE_MATRIX } from '@joppilot/contract';
 import { TeleopPanel } from '../teleop/TeleopPanel';
 
 export function Operations() {
-  const { telemetry: t, hasControl, operatorId, vehicleId, token, takeControl, cmdPost, estop } = useSession();
+  const { telemetry: t, hasControl, operatorId, vehicleId, token, takeControl, cmdPost, estop, commandsDisabled } = useSession();
 
   const drive = (payload: object) => cmdPost('command', { payload });
 
@@ -88,7 +88,7 @@ export function Operations() {
             <div className="kv"><span>Vehicle</span><strong>{vehicleId}</strong></div>
             <div className="kv"><span>Mode</span><strong>{t?.mode ?? '—'}</strong></div>
             <div className="kv"><span>Zone</span><strong>{t?.currentZone ?? '—'}</strong></div>
-            {!token && <Button block onClick={takeControl} style={{ marginTop: 12 }}>Take control</Button>}
+            {!token && <Button block onClick={takeControl} disabled={commandsDisabled} style={{ marginTop: 12 }}>Take control</Button>}
           </div>
         </Card>
       </div>

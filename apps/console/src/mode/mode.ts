@@ -13,6 +13,8 @@
  *   local     developer mode against the localhost stack (`pnpm dev` + the
  *             docker-compose services). See isLocalOriginAvailable below.
  */
+import { getTokens } from '../aws/auth';
+
 export type AppMode = 'demo' | 'operator' | 'local';
 
 const STORAGE_KEY = 'joppilot.mode';
@@ -34,6 +36,28 @@ export function isLocalOriginAvailable(): boolean {
   return h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1';
 }
 
+/**
+ * Is a stored 'operator' choice still backed by an actual sign-in?
+ *
+ * WHY THIS GUARD EXISTS: the gate stores the mode BEFORE redirecting to the
+ * Hosted UI (it has to — the redirect comes back to this origin and the
+ * session must already know what it is). A visitor who then closes the Hosted
+ * UI, cancels, or hits an auth error returns to a page whose stored mode says
+ * "operator" but which holds no token: the console mounted around an empty
+ * session, with no telemetry and — worse — no way back, because the entry gate
+ * is the ONLY place that can start the Hosted-UI flow. Two things count as a
+ * live operator session: a token in hand, or an authorization code in the URL
+ * that is about to become one.
+ */
+export function operatorSessionAlive(): boolean {
+  try {
+    if (new URLSearchParams(window.location.search).has('code')) return true;
+  } catch {
+    /* malformed query string — fall through to the token check */
+  }
+  return getTokens() !== null;
+}
+
 export function readStoredMode(): AppMode | null {
   try {
     const v = window.sessionStorage.getItem(STORAGE_KEY);
@@ -42,6 +66,7 @@ export function readStoredMode(): AppMode | null {
       // honoured (e.g. a 'local' left over from a dev session, opened on the
       // deployed site).
       if (v === 'local' && !isLocalOriginAvailable()) return null;
+      if (v === 'operator' && !operatorSessionAlive()) return null;
       return v;
     }
   } catch {

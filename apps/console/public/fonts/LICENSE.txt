@@ -1,0 +1,10 @@
+Nunito — Copyright (c) The Nunito Project Authors
+https://github.com/googlefonts/nunito
+
+Licensed under the SIL Open Font License, Version 1.1.
+Full text: https://openfontlicense.org/  (OFL-1.1)
+
+The two .woff2 files in this directory are the unmodified `latin` and
+`latin-ext` subsets of Nunito v32 as published by Google Fonts. They are
+served from our own origin so that no visitor request reaches a third party
+(see src/theme/fonts.css for the reasoning).
