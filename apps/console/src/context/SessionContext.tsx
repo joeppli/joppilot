@@ -10,18 +10,36 @@ import { useDemoVehicle } from '../demo/simulator';
 const TELEMETRY_WS = 'http://localhost:4001';
 const COMMAND_WS = 'http://localhost:4000';
 
-// M3-4c: where the command / maneuver / fleet REST calls go. In cloud-command
-// mode (awsConfig.apiEndpoint set) everything routes through the ONE API
-// Gateway (it path-routes /api/command, /api/maneuver, /api/fleet); otherwise
-// the local dev services (command 4000, fleet 4002) are used as before.
+// M3-4c: where the command / maneuver / fleet REST calls go.
+//
+// An OPERATOR session sends everything through the ONE API Gateway (it
+// path-routes /api/command, /api/maneuver and /api/fleet). A LOCAL developer
+// session talks to the services running on this machine. A DEMO session sends
+// nothing anywhere.
+//
+// The localhost addresses below are NOT a fallback for an operator session.
+// They used to be — `cloudApi ?? 'http://127.0.0.1:4000'` — and on the
+// deployed page that meant an operator whose build carried no
+// VITE_AWS_API_ENDPOINT silently aimed every command at 127.0.0.1, i.e. at
+// whatever is listening on the OPERATOR'S OWN machine (plus a browser
+// local-network permission prompt). The endpoint is therefore chosen by MODE:
+// an operator session without a cloud API has no command endpoint at all, its
+// command calls are no-ops, and the UI says so rather than failing silently.
 const cloudApi = awsConfig?.apiEndpoint;
-const COMMAND_API = cloudApi ?? 'http://127.0.0.1:4000';
-const FLEET_API = cloudApi ?? 'http://127.0.0.1:4002';
+const LOCAL_COMMAND_API = 'http://127.0.0.1:4000';
+const LOCAL_FLEET_API = 'http://127.0.0.1:4002';
 
-/** JSON headers + the Cognito Bearer token when driving the cloud (M3-4c). */
-function apiHeaders(): Record<string, string> {
+/**
+ * JSON headers + the Cognito Bearer token when driving the cloud (M3-4c).
+ *
+ * `toCloud` gates the Authorization header rather than a module-level flag: a
+ * local dev service has no JWT authorizer, and attaching an operator's ID
+ * token to a 127.0.0.1 request would hand a real credential to whatever is
+ * listening there.
+ */
+function apiHeaders(toCloud: boolean): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (cloudApi) {
+  if (toCloud) {
     const t = getTokens();
     // Send the ID token: the API Gateway JWT authorizer checks `aud` (= client
     // id), which access tokens lack, and the services read cognito:groups /
@@ -54,6 +72,13 @@ interface SessionValue {
 
   mission: MissionState | null;
   checkItems: CheckItem[];
+
+  /**
+   * True when this session can display the console but cannot SEND anything:
+   * an operator session on a deployment whose build has no API Gateway URL.
+   * The UI must say so — silently dead buttons are worse than absent ones.
+   */
+  commandsDisabled: boolean;
 
   // M3-4b cloud mode (live WSS from IoT Core; 'off' when not configured)
   cloudState: CloudState;
@@ -88,6 +113,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const isDemo = mode === 'demo';
   const isOperator = mode === 'operator';
   const isLocal = mode === 'local';
+
+  // Endpoints resolved per MODE, not per config presence (see the note above
+  // the constants). `undefined` means "this session has nowhere to send a
+  // command" and every helper below treats it as a hard stop.
+  const commandApi = isOperator ? cloudApi : isLocal ? LOCAL_COMMAND_API : undefined;
+  const fleetApi = isOperator ? cloudApi : isLocal ? LOCAL_FLEET_API : undefined;
+  const toCloud = isOperator && !!cloudApi;
+  const commandsDisabled = isOperator && !cloudApi;
 
   const vehicleId = 'VEH-001';
   // In cloud-command mode the operatorId MUST equal the signed-in Cognito
@@ -160,10 +193,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [cloud.state, isOperator]);
 
   // ── Demo mode: the vehicle is simulated in this tab ──
-  // The hook always runs (hooks cannot be conditional) but its output is only
-  // published into `telemetry` for a demo session, so an operator session is
-  // untouched by it.
-  const demo = useDemoVehicle(vehicleId);
+  // The hook always runs (hooks cannot be conditional) but `isDemo` switches
+  // its 4 Hz tick off entirely in every other mode — otherwise it re-rendered
+  // this provider, and with it the whole console, four times a second in
+  // sessions that never read a simulated value.
+  const demo = useDemoVehicle(vehicleId, isDemo);
 
   useEffect(() => {
     if (!isDemo) return;
@@ -210,11 +244,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // ── Heartbeat (deadman) ──
   useEffect(() => {
     if (isDemo) return; // no server to keep alive; the simulator owns the latch
-    if (token) {
+    if (token && commandApi) {
       heartbeatRef.current = window.setInterval(async () => {
         try {
-          const r = await fetch(`${COMMAND_API}/api/command/${vehicleId}/heartbeat`, {
-            method: 'POST', headers: apiHeaders(),
+          const r = await fetch(`${commandApi}/api/command/${vehicleId}/heartbeat`, {
+            method: 'POST', headers: apiHeaders(toCloud),
             body: JSON.stringify({ operatorId, token }),
           });
           const d = await r.json();
@@ -225,7 +259,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       clearInterval(heartbeatRef.current);
     }
     return () => { if (heartbeatRef.current) clearInterval(heartbeatRef.current); };
-  }, [token, operatorId, vehicleId, isDemo]);
+  }, [token, operatorId, vehicleId, isDemo, commandApi, toCloud]);
 
   // ── API helpers ──
   // Every network helper below carries the same demo guard. Guarding here
@@ -237,55 +271,58 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     // sent anywhere. Holding control is still required, so the demo shows the
     // real gating (a session without the token cannot command a vehicle).
     if (isDemo) { if (token) demo.command(path, body); return null; }
-    if (!token) return null;
-    const r = await fetch(`${COMMAND_API}/api/command/${vehicleId}/${path}`, {
-      method: 'POST', headers: apiHeaders(),
+    // No endpoint for this session (see commandsDisabled): send nothing. The
+    // UI surfaces the reason; this is not the place to guess an address.
+    if (!token || !commandApi) return null;
+    const r = await fetch(`${commandApi}/api/command/${vehicleId}/${path}`, {
+      method: 'POST', headers: apiHeaders(toCloud),
       body: JSON.stringify({ operatorId, token, ...body }),
     });
     if (r.status === 401) { setToken(null); return null; }
     return r.json();
-  }, [token, operatorId, vehicleId, isDemo, demo.command]);
+  }, [token, operatorId, vehicleId, isDemo, demo.command, commandApi, toCloud]);
 
   // Fleet workflows are operator actions on the vehicle: every mutating call
   // carries the fencing token (SEC-05) — the fleet service rejects it otherwise.
   const fleetPost = useCallback(async (path: string, body?: object) => {
-    if (isDemo || !token) return null;
+    if (isDemo || !token || !fleetApi) return null;
     try {
-      const r = await fetch(`${FLEET_API}/api/fleet${path}`, {
-        method: 'POST', headers: apiHeaders(),
+      const r = await fetch(`${fleetApi}/api/fleet${path}`, {
+        method: 'POST', headers: apiHeaders(toCloud),
         body: JSON.stringify({ operatorId, token, ...(body ?? {}) }),
       });
       return r.ok ? r.json() : null;
     } catch { return null; }
-  }, [token, operatorId, isDemo]);
+  }, [token, operatorId, isDemo, fleetApi, toCloud]);
 
   const fleetGet = useCallback(async (path: string) => {
-    if (isDemo) return null;
-    try { const r = await fetch(`${FLEET_API}/api/fleet${path}`, { headers: apiHeaders() }); return r.ok ? r.json() : null; }
+    if (isDemo || !fleetApi) return null;
+    try { const r = await fetch(`${fleetApi}/api/fleet${path}`, { headers: apiHeaders(toCloud) }); return r.ok ? r.json() : null; }
     catch { return null; }
-  }, [isDemo]);
+  }, [isDemo, fleetApi, toCloud]);
 
   const takeControl = useCallback(async () => {
     // A demo session holds a LOCAL token: it exists only so the UI can show the
     // controlled state, and no cloud ever issues or validates it. The real
     // fencing token (SEC-05) is never minted outside an authenticated session.
     if (isDemo) { setToken('demo-local-session'); return; }
-    const r = await fetch(`${COMMAND_API}/api/command/${vehicleId}/take-control`, {
-      method: 'POST', headers: apiHeaders(),
+    if (!commandApi) return;
+    const r = await fetch(`${commandApi}/api/command/${vehicleId}/take-control`, {
+      method: 'POST', headers: apiHeaders(toCloud),
       body: JSON.stringify({ operatorId }),
     });
     if (r.ok) { const d = await r.json(); setToken(d.token); }
-  }, [operatorId, vehicleId, isDemo]);
+  }, [operatorId, vehicleId, isDemo, commandApi, toCloud]);
 
   const estop = useCallback(() => { cmdPost('estop'); }, [cmdPost]);
 
   const decideManeuver = useCallback(async (decision: 'CONFIRM' | 'REJECT' | 'SELECT_ALTERNATIVE', optionId?: string) => {
-    if (isDemo || !activeProposal || !token) return;
-    await fetch(`${COMMAND_API}/api/maneuver/${activeProposal.proposalId}/decide`, {
-      method: 'POST', headers: apiHeaders(),
+    if (isDemo || !commandApi || !activeProposal || !token) return;
+    await fetch(`${commandApi}/api/maneuver/${activeProposal.proposalId}/decide`, {
+      method: 'POST', headers: apiHeaders(toCloud),
       body: JSON.stringify({ operatorId, token, decision, optionId }),
     });
-  }, [activeProposal, token, operatorId, isDemo]);
+  }, [activeProposal, token, operatorId, isDemo, commandApi, toCloud]);
 
   // ── Mission ──
   const createMission = useCallback(async () => {
@@ -356,7 +393,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     vehicleId, operatorId, token, hasControl: !!token, connection, telemetry,
     isLatched: telemetry?.vehicleState === 'SAFE_STOPPED',
     activeProposal, proposalTimeLeft, lastProposalResult,
-    mission, checkItems,
+    mission, checkItems, commandsDisabled,
     cloudState: cloud.state, cloudSignIn: cloud.signIn, cloudSignOut: cloud.signOut,
     takeControl, cmdPost, estop, decideManeuver,
     createMission, setCheckItem, confirmAndStart, missionAction, dismissMission,

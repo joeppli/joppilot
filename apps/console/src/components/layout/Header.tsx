@@ -11,7 +11,7 @@ function currentLabel(path: string): string {
 }
 
 export function Header() {
-  const { hasControl, operatorId, takeControl, cloudState, cloudSignIn, cloudSignOut } = useSession();
+  const { hasControl, operatorId, takeControl, commandsDisabled, cloudState, cloudSignIn, cloudSignOut } = useSession();
   const { mode, reset } = useMode();
   const { pathname } = useLocation();
 
@@ -50,7 +50,10 @@ export function Header() {
         )}
         {hasControl
           ? <Badge tone="success">Control active — {operatorId}</Badge>
-          : <Button size="sm" onClick={takeControl}>Take Control</Button>}
+          // Taking control means minting a fencing token on the command
+          // service; with no command endpoint there is nothing to mint it.
+          // The Overlays banner carries the explanation.
+          : <Button size="sm" onClick={takeControl} disabled={commandsDisabled} title={commandsDisabled ? t.commandsDisabledTitle : undefined}>Take Control</Button>}
         <div className="avatar" title={operatorId}>{operatorId.slice(3, 5) || 'OP'}</div>
         {/* Replaces the old cloud-only "Sign out": that one existed only when
             AWS was configured and left the app mounted, so it could not return

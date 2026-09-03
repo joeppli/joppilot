@@ -46,7 +46,14 @@ function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
 }
 
-export function useDemoVehicle(vehicleId: string): DemoVehicle {
+/**
+ * @param enabled false in every non-demo session. React forbids conditional
+ *   hooks, so this hook is CALLED in all modes — but with `enabled` false it
+ *   starts no interval and sets no state, so an operator or local session pays
+ *   nothing for it. Without this flag the 4 Hz tick re-rendered the whole
+ *   SessionProvider subtree in modes that never read a single simulated value.
+ */
+export function useDemoVehicle(vehicleId: string, enabled: boolean): DemoVehicle {
   // Motion state lives in a ref: it updates 4× a second and must not re-render
   // anything by itself — only the telemetry snapshot published each tick does.
   const leg = useRef(0);
@@ -55,7 +62,6 @@ export function useDemoVehicle(vehicleId: string): DemoVehicle {
   const reversing = useRef(false);
   const latched = useRef(false);
   const battery = useRef(87.4);
-  const hazards = useRef(false);
 
   const build = useCallback((): TelemetryPayload => {
     const from = ROUTE[leg.current];
@@ -72,7 +78,11 @@ export function useDemoVehicle(vehicleId: string): DemoVehicle {
       location: { lat, lng },
       speedKmh,
       vehicleState: latched.current ? 'SAFE_STOPPED' : moving ? 'REMOTE_DRIVE' : 'IDLE',
-      mode: 'MODE2',
+      // The operating mode reports what the vehicle is DOING, not a constant:
+      // direct remote driving is Mode 2, standing still (idle or latched) is
+      // supervision — Mode 1. A hard-coded MODE2 would have told an observer
+      // the vehicle was under direct control while it sat latched.
+      mode: moving ? 'MODE2' : 'MODE1',
       battery: {
         percent: battery.current,
         voltageV: 51.2 - (100 - battery.current) * 0.02,
@@ -89,13 +99,18 @@ export function useDemoVehicle(vehicleId: string): DemoVehicle {
       computeHealth: { cpuPercent: moving ? 46 : 22, ramPercent: 38, temperatureC: 52 },
       connection: { rttMs: 38, packetLossPercent: 0, carrier: 'Demo', band: 'n/a' },
       currentZone: 'depot',
-      dtc: hazards.current ? ['DEMO-HAZARD-ON'] : [],
+      // ICD §5: `dtc` is the DIAGNOSTIC TROUBLE CODE list. A healthy simulated
+      // vehicle has none, and lamp state is not a fault — an earlier version
+      // pushed a fake "hazards on" code in here, which would have shown up as a
+      // vehicle fault anywhere a real DTC list is read.
+      dtc: [],
     };
   }, [vehicleId]);
 
   const [telemetry, setTelemetry] = useState<TelemetryPayload>(() => build());
 
   useEffect(() => {
+    if (!enabled) return;
     const id = window.setInterval(() => {
       if (driving.current && !latched.current) {
         const step = STEP_AT_FULL_SPEED * (reversing.current ? -1 : 1);
@@ -113,7 +128,7 @@ export function useDemoVehicle(vehicleId: string): DemoVehicle {
       setTelemetry(build());
     }, TICK_MS);
     return () => window.clearInterval(id);
-  }, [build]);
+  }, [build, enabled]);
 
   /**
    * The demo's second gate. The real vehicle refuses a command that its own
@@ -142,19 +157,28 @@ export function useDemoVehicle(vehicleId: string): DemoVehicle {
         latched.current = true;
         break;
       case 'DRIVE':
-        // Throttle moves it, brake stops it — the two buttons the demo needs.
-        if (typeof p.throttle === 'number' && p.throttle > 0) driving.current = true;
-        if (typeof p.brake === 'number' && p.brake > 0) driving.current = false;
+        // The DRIVE frame is the WHOLE pedal state, not an increment: the
+        // teleop loop sends {throttle, brake} continuously and sends
+        // {throttle: 0, brake: 0} the moment the operator releases the stick.
+        // So this must STOP on a zero frame — treating "no throttle" as "keep
+        // going" would leave the demo vehicle rolling after the input was let
+        // go, which is exactly the failure the real vehicle must never have.
+        driving.current =
+          (typeof p.throttle === 'number' ? p.throttle : 0) > 0 &&
+          (typeof p.brake === 'number' ? p.brake : 0) <= 0;
         break;
       case 'SELECT_DIRECTION':
+        // Selecting a gear does NOT move the vehicle — it only chooses which
+        // way throttle will take it (ICD §4). NEUTRAL is the exception: it
+        // disengages the drivetrain, so it stops a vehicle that was moving.
         reversing.current = p.direction === 'REVERSE';
-        driving.current = p.direction !== 'NEUTRAL';
-        break;
-      case 'HAZARD_LIGHTS':
-        hazards.current = !!p.on;
+        if (p.direction === 'NEUTRAL') driving.current = false;
         break;
       default:
-        break; // TURN / STEER / HORN: no visible effect on a point on a route
+        // HAZARD_LIGHTS / LIGHTS / TURN / STEER / HORN are accepted and have no
+        // visible effect: the ICD §5 telemetry payload carries no lamp, wheel
+        // or horn state, and a point moving along a route cannot show one.
+        break;
     }
   }, []);
 

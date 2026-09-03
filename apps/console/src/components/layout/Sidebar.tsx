@@ -2,10 +2,22 @@ import { NavLink } from 'react-router-dom';
 import { Icon } from './Icon';
 import { NAV } from './nav';
 import { useSession } from '../../context/SessionContext';
+import { useMode } from '../../mode/ModeContext';
+import { entryStrings as t } from '../../mode/strings';
 
 export function Sidebar() {
   const { connection } = useSession();
+  const { mode } = useMode();
   const online = connection === 'connected';
+
+  // A demo session IS connected — to a simulator in this tab. Calling that
+  // "Live telemetry" would be the console vouching for invented numbers, so
+  // the connected state is named after its actual source.
+  const connLabel =
+    connection === 'connecting' ? t.telemetryConnecting
+      : connection === 'disconnected' ? t.telemetryOffline
+        : mode === 'demo' ? t.telemetrySimulated
+          : t.telemetryLive;
 
   return (
     <aside className="sidebar">
@@ -41,7 +53,7 @@ export function Sidebar() {
       <div className="sidebar-foot">
         <span className="conn">
           <span className={`dot ${online ? 'on' : 'off'}`} />
-          {connection === 'connected' ? 'Live telemetry' : connection === 'connecting' ? 'Connecting…' : 'Offline'}
+          {connLabel}
         </span>
       </div>
     </aside>

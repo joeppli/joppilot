@@ -1,18 +1,32 @@
 import { Button } from '../ui';
 import { useSession } from '../../context/SessionContext';
+import { entryStrings as t } from '../../mode/strings';
 
 /** Cross-page safety overlays: latched safe-stop banner + active maneuver proposal. */
 export function Overlays() {
   const {
-    isLatched, hasControl, cmdPost,
+    isLatched, hasControl, cmdPost, commandsDisabled,
     activeProposal, proposalTimeLeft, lastProposalResult, decideManeuver,
   } = useSession();
 
-  if (!isLatched && !activeProposal && !lastProposalResult) return null;
+  if (!isLatched && !activeProposal && !lastProposalResult && !commandsDisabled) return null;
   const urgent = proposalTimeLeft < 5000;
 
   return (
     <div className="overlays">
+      {/* Why a banner and not just greyed-out buttons: an operator whose build
+          has no command endpoint would otherwise see a normal console whose
+          controls quietly do nothing. Naming the condition is the difference
+          between a known limitation and a suspected outage. */}
+      {commandsDisabled && (
+        <div className="banner banner-info" role="status">
+          <div>
+            <strong>{t.commandsDisabledTitle}</strong>
+            <div className="text-sm">{t.commandsDisabledBody}</div>
+          </div>
+        </div>
+      )}
+
       {isLatched && hasControl && (
         <div className="banner banner-danger" role="alert">
           <div>

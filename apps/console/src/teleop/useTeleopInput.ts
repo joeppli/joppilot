@@ -121,6 +121,25 @@ export function useTeleopInput({ enabled, hasControl, mode2Allowed, profile, sen
     };
   }, [active, profile, sendCommand]);
 
+  // ── Release the pedals when the panel goes away ──
+  // Disarming covers the toggle, lost control, a zone leaving Mode 2 and window
+  // blur — but NOT unmount, and the panel unmounts the moment the operator
+  // navigates off the Operations page. Until this ran, leaving the page mid-
+  // drive left the last DRIVE frame standing and the vehicle rolling (found by
+  // driving the demo over CDP: hold throttle, switch to the map, keep going).
+  //
+  // Bound to UNMOUNT ONLY, deliberately: a cleanup that also ran on every
+  // dependency change would inject a zero-throttle frame into a drive in
+  // progress, i.e. blip the vehicle. The refs keep the unmount handler from
+  // capturing a stale sender or a stale armed state.
+  const sendRef = useRef(sendCommand);
+  const armedRef = useRef(false);
+  useEffect(() => { sendRef.current = sendCommand; }, [sendCommand]);
+  useEffect(() => { armedRef.current = active; }, [active]);
+  useEffect(() => () => {
+    if (armedRef.current) sendRef.current({ action: 'DRIVE', throttle: 0, brake: 0 });
+  }, []);
+
   // ── Control loop ──
   useEffect(() => {
     if (!active) {
