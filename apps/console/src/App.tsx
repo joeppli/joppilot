@@ -1,6 +1,8 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useEffect, useRef } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { SessionProvider } from './context/SessionContext';
 import { ModeProvider, useMode } from './mode/ModeContext';
+import type { AppMode } from './mode/mode';
 import { EntryGate } from './mode/EntryGate';
 import { AppShell } from './components/layout/AppShell';
 import { Dashboard } from './pages/Dashboard';
@@ -38,12 +40,10 @@ function Gated() {
   return (
     <SessionProvider>
       <BrowserRouter>
+        <LandingRedirect mode={mode} />
         <Routes>
           <Route element={<AppShell />}>
-            {/* A demo visitor came to watch a vehicle move, so they land on the
-                map rather than on a dashboard of cards. Operators keep the
-                dashboard as their landing page. */}
-            <Route path="/" element={mode === 'demo' ? <Navigate to="/map" replace /> : <Dashboard />} />
+            <Route path="/" element={<Dashboard />} />
             <Route path="/map" element={<MapDispatch />} />
             <Route path="/vehicles" element={<Vehicles />} />
             <Route path="/operations" element={<Operations />} />
@@ -62,4 +62,26 @@ function Gated() {
       </BrowserRouter>
     </SessionProvider>
   );
+}
+
+/**
+ * A demo visitor came to watch a vehicle move, so the session LANDS on the map
+ * instead of on a dashboard of cards.
+ *
+ * This is a LANDING rule, not a routing rule — and the difference matters.
+ * Routing '/' to the map permanently made the Dashboard unreachable for a demo
+ * session: the sidebar offered a Dashboard link that bounced straight back to
+ * the map, which is precisely the dead end the demo must not have. Firing once,
+ * and only from '/', keeps the landing behaviour while leaving every screen
+ * navigable (and leaves a deep link into any other path alone).
+ */
+function LandingRedirect({ mode }: { mode: AppMode }) {
+  const navigate = useNavigate();
+  const done = useRef(false);
+  useEffect(() => {
+    if (done.current) return;
+    done.current = true;
+    if (mode === 'demo' && window.location.pathname === '/') navigate('/map', { replace: true });
+  }, [mode, navigate]);
+  return null;
 }

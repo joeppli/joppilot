@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { Icon } from './Icon';
-import { NAV } from './nav';
+import { navFor } from './nav';
 import { useSession } from '../../context/SessionContext';
 import { useMode } from '../../mode/ModeContext';
 import { entryStrings as t } from '../../mode/strings';
@@ -9,6 +9,8 @@ export function Sidebar() {
   const { connection } = useSession();
   const { mode } = useMode();
   const online = connection === 'connected';
+  const isDemo = mode === 'demo';
+  const nav = navFor(mode);
 
   // A demo session IS connected — to a simulator in this tab. Calling that
   // "Live telemetry" would be the console vouching for invented numbers, so
@@ -30,7 +32,7 @@ export function Sidebar() {
       </div>
 
       <nav className="sidebar-nav">
-        {NAV.map((section, i) => (
+        {nav.map((section, i) => (
           <div key={i}>
             {section.heading && <div className="sidebar-section">{section.heading}</div>}
             {section.items.map(item => (
@@ -49,6 +51,10 @@ export function Sidebar() {
           </div>
         ))}
       </nav>
+
+      {/* The demo shows four working screens; this says what the other
+          modules are, so hiding them reads as scope rather than absence. */}
+      {isDemo && <p className="sidebar-scope-note">{t.demoScopeNote}</p>}
 
       <div className="sidebar-foot">
         <span className="conn">

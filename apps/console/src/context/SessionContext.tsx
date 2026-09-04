@@ -5,6 +5,7 @@ import { awsConfig } from '../aws/config';
 import { getTokens, getUsername } from '../aws/auth';
 import { useCloudTelemetry, CloudState } from '../aws/useCloudTelemetry';
 import { useMode } from '../mode/ModeContext';
+import { entryStrings as strings, fmt } from '../mode/strings';
 import { useDemoVehicle } from '../demo/simulator';
 
 const TELEMETRY_WS = 'http://localhost:4001';
@@ -141,12 +142,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const heartbeatRef = useRef<number | null>(null);
   const proposalTimerRef = useRef<number | null>(null);
   const proposalDeadlineRef = useRef(0);
+  // The proposal a status update is about. The status handler is stable (it is
+  // wired into three data sources at mount), so it cannot read `activeProposal`
+  // from state — but it needs the proposal's OPTIONS to turn the id in the
+  // update into a sentence a human can read.
+  const activeProposalRef = useRef<ManeuverProposal | null>(null);
 
   // Shared by BOTH telemetry sources (local Socket.IO / cloud IoT WSS).
   const handleProposal = useCallback((p: ManeuverProposal) => {
+    activeProposalRef.current = p;
     setActiveProposal(p);
     setLastProposalResult(null);
     proposalDeadlineRef.current = Date.now() + p.validityWindowMs;
+    // Seed the countdown from the proposal itself instead of letting the first
+    // interval tick do it 200 ms later: the leftover 0 from the previous
+    // proposal made every new card paint once as "0s" — and the card styles
+    // itself URGENT below 5 s, so each proposal opened with a red flash.
+    setProposalTimeLeft(p.validityWindowMs);
     if (proposalTimerRef.current) clearInterval(proposalTimerRef.current);
     proposalTimerRef.current = window.setInterval(() => {
       const r = Math.max(0, proposalDeadlineRef.current - Date.now());
@@ -156,17 +168,28 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const handleProposalStatus = useCallback((u: ManeuverProposalStatusUpdate) => {
-    if (['DECIDED', 'TIMED_OUT', 'CANCELLED'].includes(u.status)) {
-      setActiveProposal(null);
-      if (proposalTimerRef.current) clearInterval(proposalTimerRef.current);
-      setLastProposalResult(
-        u.status === 'TIMED_OUT'
-          ? `Timed out → safe default (${u.selectedOptionId})`
-          : `${u.status} (${u.selectedOptionId ?? 'rejected'})`,
-      );
-      setTimeout(() => setLastProposalResult(null), 8000);
-    }
+    if (!['DECIDED', 'TIMED_OUT', 'CANCELLED'].includes(u.status)) return;
+    const p = activeProposalRef.current;
+    activeProposalRef.current = null;
+    setActiveProposal(null);
+    if (proposalTimerRef.current) clearInterval(proposalTimerRef.current);
+
+    // Report the option by DESCRIPTION. The id is meaningless to the operator
+    // and to whoever reads the audit trail later; "opt-3f2a91c4-b" tells them
+    // nothing about what the vehicle actually did.
+    const option = p?.options.find(o => o.optionId === u.selectedOptionId)?.description ?? u.selectedOptionId;
+    setLastProposalResult(
+      u.status === 'TIMED_OUT' ? fmt(strings.proposalTimedOut, { option: option ?? '—' })
+        : u.status === 'CANCELLED' ? strings.proposalCancelled
+          : option ? fmt(strings.proposalDecided, { option })
+            : strings.proposalRejected,
+    );
+    setTimeout(() => setLastProposalResult(null), 8000);
   }, []);
+
+  // The 200 ms countdown outlives the provider otherwise (leaving a session
+  // unmounts it), leaving an interval writing into a dead component.
+  useEffect(() => () => { if (proposalTimerRef.current) clearInterval(proposalTimerRef.current); }, []);
 
   // ── Cloud mode (M3-4b): live WSS straight from IoT Core ──
   // Active only when apps/console/.env.local carries the VITE_AWS_* values;
@@ -197,7 +220,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // its 4 Hz tick off entirely in every other mode — otherwise it re-rendered
   // this provider, and with it the whole console, four times a second in
   // sessions that never read a simulated value.
-  const demo = useDemoVehicle(vehicleId, isDemo);
+  // The simulator is a third data source with the SAME interface as the cloud
+  // one: it publishes ICD §6 proposals and status updates into the very
+  // handlers the live WSS and the local socket feed, so the proposal card,
+  // countdown and safe-default reporting are one code path, not a demo copy.
+  const demo = useDemoVehicle(vehicleId, isDemo, { onProposal: handleProposal, onStatus: handleProposalStatus });
 
   useEffect(() => {
     if (!isDemo) return;
@@ -317,12 +344,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const estop = useCallback(() => { cmdPost('estop'); }, [cmdPost]);
 
   const decideManeuver = useCallback(async (decision: 'CONFIRM' | 'REJECT' | 'SELECT_ALTERNATIVE', optionId?: string) => {
-    if (isDemo || !commandApi || !activeProposal || !token) return;
+    // Demo: the in-tab vehicle resolves its own proposal, applying the edge's
+    // rules — including refusing a decision that arrives after the window
+    // closed, where the safe default has already been applied.
+    if (isDemo) { if (token) demo.decideProposal(decision, optionId); return; }
+    if (!commandApi || !activeProposal || !token) return;
     await fetch(`${commandApi}/api/maneuver/${activeProposal.proposalId}/decide`, {
       method: 'POST', headers: apiHeaders(toCloud),
       body: JSON.stringify({ operatorId, token, decision, optionId }),
     });
-  }, [activeProposal, token, operatorId, isDemo, commandApi, toCloud]);
+  }, [activeProposal, token, operatorId, isDemo, commandApi, toCloud, demo.decideProposal]);
 
   // ── Mission ──
   const createMission = useCallback(async () => {
