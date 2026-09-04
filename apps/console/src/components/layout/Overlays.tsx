@@ -1,6 +1,6 @@
 import { Button } from '../ui';
 import { useSession } from '../../context/SessionContext';
-import { entryStrings as t } from '../../mode/strings';
+import { entryStrings as t, fmt } from '../../mode/strings';
 
 /** Cross-page safety overlays: latched safe-stop banner + active maneuver proposal. */
 export function Overlays() {
@@ -41,7 +41,7 @@ export function Overlays() {
         <div className={`maneuver${urgent ? ' urgent' : ''}`} role="alert" aria-live="assertive">
           <div className="row between" style={{ marginBottom: 12 }}>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 'var(--fs-md)' }}>Maneuver proposal</div>
+              <div style={{ fontWeight: 700, fontSize: 'var(--fs-md)' }}>{t.maneuverHeading}</div>
               <div className="text-sm muted" style={{ marginTop: 2 }}>
                 {activeProposal.reasonCode} — {activeProposal.context.sceneSummary}
               </div>
@@ -65,25 +65,33 @@ export function Overlays() {
                 className={`maneuver-opt${opt.optionId === activeProposal.defaultOnTimeout ? ' default' : ''}`}
                 disabled={!hasControl}
                 onClick={() => decideManeuver(isProposed ? 'CONFIRM' : 'SELECT_ALTERNATIVE', opt.optionId)}
-                aria-label={`${isProposed ? 'Approve proposed maneuver' : 'Select alternative'}: ${opt.description}. Expected: ${opt.expectedResult}`}
+                aria-label={fmt(t.maneuverOptionAria, {
+                  action: isProposed ? t.maneuverApproveAction : t.maneuverAlternativeAction,
+                  description: opt.description,
+                  expected: opt.expectedResult,
+                })}
               >
                 <div style={{ fontWeight: 600 }}>{opt.description}</div>
                 <div className="text-sm muted" style={{ marginTop: 2 }}>{opt.expectedResult}</div>
                 {isProposed &&
-                  <div className="text-xs" style={{ color: 'var(--color-success, #2e7d32)', marginTop: 2 }}>Proposed maneuver — approve</div>}
+                  <div className="text-xs" style={{ color: 'var(--color-success, #2e7d32)', marginTop: 2 }}>{t.maneuverProposed}</div>}
                 {opt.optionId === activeProposal.defaultOnTimeout &&
-                  <div className="text-xs" style={{ color: 'var(--color-warning)', marginTop: 2 }}>Safe default on timeout</div>}
+                  <div className="text-xs" style={{ color: 'var(--color-warning)', marginTop: 2 }}>{t.maneuverSafeDefault}</div>}
               </button>
             );
           })}
           <Button variant="ghost" size="sm" disabled={!hasControl} onClick={() => decideManeuver('REJECT')}>
-            Reject proposal
+            {t.maneuverReject}
           </Button>
+          {/* Without this line, an observer without control sees a countdown
+              and four dead buttons. ICD §6: the vehicle does not wait for a
+              decision that never comes — say so before it happens. */}
+          {!hasControl && <p className="text-xs muted" style={{ marginTop: 8 }}>{t.proposalNeedsControl}</p>}
         </div>
       )}
 
       {lastProposalResult && (
-        <div className="banner banner-info text-sm" role="status">Last proposal: {lastProposalResult}</div>
+        <div className="banner banner-info text-sm" role="status">{fmt(t.proposalResult, { result: lastProposalResult })}</div>
       )}
     </div>
   );

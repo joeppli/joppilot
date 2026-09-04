@@ -1,11 +1,19 @@
 import { Card, CardHeader, StatCard, Badge, Button, vehicleStateTone, missionTone } from '../components/ui';
 import { useSession } from '../context/SessionContext';
+import { useMode } from '../mode/ModeContext';
+import { entryStrings as str } from '../mode/strings';
 
 export function Dashboard() {
   const {
     telemetry: t, connection, hasControl, operatorId,
     mission, checkItems, createMission, setCheckItem, confirmAndStart, missionAction, dismissMission,
   } = useSession();
+
+  // The mission lifecycle and the pre-departure checklist are fleet-backend
+  // REST workflows. A demo session contacts no backend, so "New mission" would
+  // be a button that silently does nothing — the one thing a demo must not do.
+  const { mode } = useMode();
+  const isDemo = mode === 'demo';
 
   const allChecked = checkItems.length > 0 && checkItems.every(i => i.status !== 'PENDING');
   const criticalFail = checkItems.some(i => i.safetyCritical && i.status === 'FAIL');
@@ -36,9 +44,15 @@ export function Dashboard() {
         </Card>
 
         <Card>
-          <CardHeader title="Mission" action={mission ? <Badge tone={missionTone(mission.status)}>{mission.status}</Badge> : undefined} />
+          <CardHeader
+            title="Mission"
+            action={isDemo ? <Badge tone="neutral">{str.notInDemo}</Badge>
+              : mission ? <Badge tone={missionTone(mission.status)}>{mission.status}</Badge> : undefined}
+          />
           <div className="card-pad">
-            {!mission ? (
+            {isDemo ? (
+              <p className="text-sm muted">{str.demoMissionUnavailable}</p>
+            ) : !mission ? (
               <>
                 <Button variant="success" disabled={!hasControl} onClick={createMission}>New mission</Button>
                 {!hasControl && <div className="text-xs muted" style={{ marginTop: 6 }}>Take control of the vehicle first (Operations page)</div>}

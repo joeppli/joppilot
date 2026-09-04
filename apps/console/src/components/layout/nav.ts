@@ -1,3 +1,5 @@
+import type { AppMode } from '../../mode/mode';
+
 export interface NavItem {
   to: string;
   label: string;
@@ -40,3 +42,22 @@ export const NAV: NavSection[] = [
     ],
   },
 ];
+
+/**
+ * The navigation a session may actually use.
+ *
+ * A demo session drops the not-yet-built pages. They are routed and honest
+ * about being planned, but every one of them needs a backend the demo never
+ * contacts — so to a visitor they are nine identical dead ends between the
+ * four screens that do work. The SCOPE they represent is not hidden: the
+ * sidebar states it in one line instead (see Sidebar / demoScopeNote).
+ *
+ * Operator and local sessions keep the full IA — for them the stubs are a
+ * roadmap, not a detour.
+ */
+export function navFor(mode: AppMode | null): NavSection[] {
+  if (mode !== 'demo') return NAV;
+  return NAV
+    .map(section => ({ ...section, items: section.items.filter(item => !item.stub) }))
+    .filter(section => section.items.length > 0);
+}
