@@ -19,7 +19,20 @@ name: deploy-site
 # values as apps/console/.env.example. They are public-by-design identifiers
 # (they ship in the JS bundle), not secrets. If they are unset the build still
 # succeeds: src/aws/config.ts gates cloud mode on all six core values being
-# present, so the deployed console falls back to a pure-localhost client.
+# present, so the deployed console offers demo mode only and says operator
+# sign-in is unavailable on this deployment.
+#
+# VITE_AWS_API_ENDPOINT GOES STALE ON EVERY destroy+restore CYCLE.
+# Vite inlines these at BUILD time, so the deployed bundle carries whatever the
+# variable held when it was built — there is no runtime config to reload. The
+# API Gateway is a destroy-billables target and comes back with a NEW invoke id,
+# so after every restore:
+#     1. read `api_endpoint` from the terraform apply Outputs,
+#     2. update the VITE_AWS_API_ENDPOINT variable here,
+#     3. re-run THIS workflow (Actions -> deploy-site -> Run workflow).
+# Without step 3 the variable is updated and the live site still serves the old
+# bundle. The other five values survive a restore (Cognito and IoT Core are not
+# destroy targets), so they normally need setting only once.
 
 on:
   pull_request:

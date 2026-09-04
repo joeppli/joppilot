@@ -25,9 +25,23 @@ name: terraform-destroy-billables
 #   Tear down (weekend):  Actions -> terraform-destroy-billables -> Run workflow
 #                         -> set "confirm" to destroy-billables -> Run.
 #   Restore (Monday):     Actions -> terraform -> Run workflow. The normal apply
-#                         recreates everything from code. Note: the API Gateway
-#                         invoke URL and ALB DNS change on every recreate (new
-#                         ids) — nothing depends on them yet in dev.
+#                         recreates everything from code.
+#
+#                         THEN RE-POINT THE DEPLOYED CONSOLE — this is not
+#                         optional any more. The API Gateway invoke URL gets a
+#                         NEW id on every recreate, and since the console is
+#                         published at pilot.joeppli.ch the old URL is baked
+#                         into the live JS bundle (Vite inlines VITE_* at BUILD
+#                         time; there is no runtime config to reload):
+#                           1. Read `api_endpoint` from this apply's Outputs.
+#                           2. Settings -> Secrets and variables -> Actions ->
+#                              Variables -> update VITE_AWS_API_ENDPOINT.
+#                           3. Actions -> deploy-site -> Run workflow.
+#                         Skip it and the live console signs operators in and
+#                         then fails every command against a URL that no longer
+#                         exists — which reads as a backend outage, not as a
+#                         stale variable. (ALB DNS also changes; nothing outside
+#                         the VPC depends on it.)
 #
 # SAFETY:
 #   - The "confirm" dropdown defaults to "no"; the job refuses to run without

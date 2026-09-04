@@ -448,7 +448,13 @@ VPC endpoints, ECS services, Valkey — the cache is ephemeral, 6-second locks l
 nothing) and keeps everything free — VPC, **Cognito users + MFA enrollments**, ECR
 (pushed images survive), the ECS cluster. Restore: run the `terraform` workflow
 manually (or merge any infra PR — apply rebuilds it); services come back and
-`api_endpoint` gets a new URL. An `$80/mo` AWS Budgets alarm emails at 50 / 80 / 100 %.
+`api_endpoint` gets a new URL — **and the published console must then be
+rebuilt against it**: update the `VITE_AWS_API_ENDPOINT` repo variable from the
+apply Outputs and re-run `deploy-site`. Vite inlines `VITE_*` at build time, so
+the live bundle keeps the old URL until it is rebuilt; an operator would sign in
+successfully and then have every command fail, which looks like an outage rather
+than a stale variable. The other five `VITE_*` values survive a restore (Cognito
+and IoT Core are not destroy targets). An `$80/mo` AWS Budgets alarm emails at 50 / 80 / 100 %.
 
 **The database is deliberately NOT in the destroy button** (stateful — permanent
 rule). It also costs (almost) nothing to keep: **db.t4g.micro + 20 GB sits inside
