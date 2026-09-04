@@ -33,6 +33,7 @@ name: deploy-site
 # Without step 3 the variable is updated and the live site still serves the old
 # bundle. The other five values survive a restore (Cognito and IoT Core are not
 # destroy targets), so they normally need setting only once.
+# Tracked as DEV-29: a stable API custom domain removes this step entirely.
 
 on:
   pull_request:
