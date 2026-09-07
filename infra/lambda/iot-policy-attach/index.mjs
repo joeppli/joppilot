@@ -40,6 +40,16 @@ const reply = (statusCode, body) => ({
 });
 
 export const handler = async (event) => {
+  // PREFLIGHT. A browser POST with an Authorization header is not simple, so it
+  // is preceded by OPTIONS — and that request needs its own route here: the
+  // API's catch-all "OPTIONS /{proxy+}" forwards to the ALB, which has no
+  // backend for this path and answers 503, failing the preflight before the
+  // real call is ever sent. The API's cors_configuration supplies the actual
+  // CORS headers; this only has to be a 2xx.
+  if (event?.requestContext?.http?.method === 'OPTIONS') {
+    return { statusCode: 204, body: '' };
+  }
+
   // API Gateway lower-cases header names on the v2 payload, but be tolerant.
   const headers = event?.headers ?? {};
   const raw = headers.authorization ?? headers.Authorization ?? '';
