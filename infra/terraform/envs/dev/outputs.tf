@@ -145,6 +145,6 @@ output "console_identity_pool_id" {
 }
 
 output "console_iot_policy_name" {
-  description = "IoT policy to attach per operator identity (DEV-23): aws iot attach-policy --policy-name <this> --target <identityId>"
+  description = "IoT policy attached to each operator identity on first sign-in by the attach Lambda. Verify with: aws iot list-targets-for-policy --policy-name <this>"
   value       = module.console_identity.iot_policy_name
 }
