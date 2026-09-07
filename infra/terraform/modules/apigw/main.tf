@@ -109,3 +109,50 @@ resource "aws_apigatewayv2_stage" "default" {
   name        = "$default"
   auto_deploy = true
 }
+
+# --- C3: the DEV-23 IoT-policy attach route (closes DEV-23) --------------------
+# A Lambda integration sitting behind the SAME Cognito authorizer as everything
+# else, but NOT behind the VPC Link — so it does not touch the ALB or ECS. That
+# matters: destroy-billables removes ALB/ECS while IoT and Cognito stay up, and
+# an operator signing in during that window still gets a working attach (and
+# therefore live telemetry) even though commands are disabled.
+#
+# ROUTING: "POST /api/iot/attach-policy" is more specific than the catch-all
+# "ANY /{proxy+}", and API Gateway picks the most specific match, so this route
+# wins without touching the proxy route. The OPTIONS preflight keeps falling
+# through to the existing unauthenticated OPTIONS route.
+#
+# The function lives in module.console_identity so it survives the teardown;
+# only this route is recreated with the API. Empty ARN = route not created,
+# which keeps the module usable standalone.
+locals {
+  iot_attach_enabled = var.iot_attach_lambda_invoke_arn != ""
+}
+
+resource "aws_apigatewayv2_integration" "iot_attach" {
+  count                  = local.iot_attach_enabled ? 1 : 0
+  api_id                 = aws_apigatewayv2_api.this.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = var.iot_attach_lambda_invoke_arn
+  integration_method     = "POST"
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "iot_attach" {
+  count              = local.iot_attach_enabled ? 1 : 0
+  api_id             = aws_apigatewayv2_api.this.id
+  route_key          = "POST /api/iot/attach-policy"
+  target             = "integrations/${aws_apigatewayv2_integration.iot_attach[0].id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+# Scoped to this API's execution ARN so no other API can invoke the function.
+resource "aws_lambda_permission" "iot_attach" {
+  count         = local.iot_attach_enabled ? 1 : 0
+  statement_id  = "AllowInvokeFromHttpApi"
+  action        = "lambda:InvokeFunction"
+  function_name = var.iot_attach_lambda_function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*/api/iot/attach-policy"
+}

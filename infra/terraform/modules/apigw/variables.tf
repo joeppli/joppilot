@@ -38,3 +38,15 @@ variable "cors_allow_origins" {
   type        = list(string)
   default     = []
 }
+
+variable "iot_attach_lambda_invoke_arn" {
+  description = "Invoke ARN of the DEV-23 IoT-policy attach function (module.console_identity). Empty disables the route."
+  type        = string
+  default     = ""
+}
+
+variable "iot_attach_lambda_function_name" {
+  description = "Function name of the DEV-23 attach function — needed for the lambda:InvokeFunction permission."
+  type        = string
+  default     = ""
+}

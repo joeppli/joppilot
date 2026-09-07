@@ -16,9 +16,9 @@
 #   1. the IAM role policy below (scoped per-identity via the
 #      ${cognito-identity.amazonaws.com:sub} policy variable), and
 #   2. an IoT policy ATTACHED TO THE COGNITO IDENTITY (AWS requirement for
-#      authenticated identities): DEV-23 — attached manually per operator
-#      identity in dev (one CloudShell command, see the register/README);
-#      automate with a post-auth hook before real operator onboarding.
+#      authenticated identities) — attached automatically on the operator's
+#      first sign-in by the attach Lambda at the bottom of this file (C3).
+#      It used to be one manual CloudShell command per operator (DEV-23).
 #
 # COST: Cognito Identity Pools are free; no standing cost → NOT a
 # destroy-billables target (same rule as module.iot).
@@ -120,8 +120,9 @@ resource "aws_cognito_identity_pool_roles_attachment" "console" {
 # IoT policy — the second half of the intersection (attached per identity)
 # -----------------------------------------------------------------------------
 # Mirrors the IAM scoping; client id left wildcard here because the IAM policy
-# already pins it to the caller's own identity id. DEV-23: attach per operator
-# identity (aws iot attach-policy --policy-name <this> --target <identityId>).
+# already pins it to the caller's own identity id. Attached per operator
+# identity by the attach Lambda below (C3) — equivalent to the manual
+# `aws iot attach-policy --policy-name <this> --target <identityId>`.
 data "aws_iam_policy_document" "iot_console" {
   statement {
     actions   = ["iot:Connect"]
@@ -140,4 +141,97 @@ data "aws_iam_policy_document" "iot_console" {
 resource "aws_iot_policy" "console_viewer" {
   name   = "${var.name_prefix}-console-viewer"
   policy = data.aws_iam_policy_document.iot_console.json
+}
+
+# -----------------------------------------------------------------------------
+# C3 — the attach, automated (closes DEV-23)
+# -----------------------------------------------------------------------------
+# The policy above is inert until it is attached to a Cognito IDENTITY, and an
+# identity only exists once the SPA has called GetId. A Cognito post-auth
+# trigger therefore cannot do this — at that moment there is nothing to attach
+# to. Instead the console calls this function (behind the API Gateway Cognito
+# authorizer, see module.apigw) right before opening its MQTT socket.
+#
+# LIVES HERE, NOT IN module.apigw, ON PURPOSE: this module is not a
+# destroy-billables target, so the function and its role survive the weekend
+# teardown. Only the route in front of it is recreated with the API. The
+# function is also independent of ECS/ALB — the attach keeps working in exactly
+# the window (IoT + Cognito up, compute down) where the console is view-only.
+# Lambda has no standing cost, so surviving the teardown costs nothing.
+data "archive_file" "attach_lambda" {
+  type        = "zip"
+  source_dir  = "${path.module}/../../../lambda/iot-policy-attach"
+  output_path = "${path.module}/.build/iot-policy-attach.zip"
+  excludes    = ["package-lock.json", ".build"]
+}
+
+data "aws_iam_policy_document" "attach_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "attach_lambda" {
+  name               = "${var.name_prefix}-iot-attach-lambda"
+  assume_role_policy = data.aws_iam_policy_document.attach_assume.json
+}
+
+# Least privilege, and the reason a bug in the handler cannot widen access:
+# AttachPolicy is granted for exactly ONE policy — the read-only console viewer
+# — so this function can never attach a publishing policy to anything.
+data "aws_iam_policy_document" "attach_lambda" {
+  statement {
+    sid       = "AttachOnlyTheConsoleViewerPolicy"
+    actions   = ["iot:AttachPolicy"]
+    resources = [aws_iot_policy.console_viewer.arn]
+  }
+  statement {
+    sid       = "DeriveCallerIdentityFromTheirToken"
+    actions   = ["cognito-identity:GetId"]
+    resources = [aws_cognito_identity_pool.console.arn]
+  }
+  statement {
+    sid       = "Logs"
+    actions   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["arn:aws:logs:${local.region}:${local.account}:*"]
+  }
+}
+
+resource "aws_iam_role_policy" "attach_lambda" {
+  name   = "${var.name_prefix}-iot-attach"
+  role   = aws_iam_role.attach_lambda.id
+  policy = data.aws_iam_policy_document.attach_lambda.json
+}
+
+# No VPC config: the function talks only to the public Cognito and IoT control
+# planes. Putting it in the VPC would make it depend on the NAT/endpoints that
+# destroy-billables removes — the exact coupling this design avoids.
+resource "aws_lambda_function" "attach" {
+  function_name    = "${var.name_prefix}-iot-policy-attach"
+  role             = aws_iam_role.attach_lambda.arn
+  runtime          = "nodejs22.x"
+  handler          = "index.handler"
+  filename         = data.archive_file.attach_lambda.output_path
+  source_code_hash = data.archive_file.attach_lambda.output_base64sha256
+  timeout          = 10 # two control-plane calls
+  memory_size      = 256
+
+  environment {
+    variables = {
+      IDENTITY_POOL_ID = aws_cognito_identity_pool.console.id
+      USER_POOL_ID     = var.user_pool_id
+      IOT_POLICY_NAME  = aws_iot_policy.console_viewer.name
+    }
+  }
+}
+
+# 14 days: this log is for diagnosing a failed first sign-in, not an audit trail
+# (the EDR/WORM evidence path is separate).
+resource "aws_cloudwatch_log_group" "attach_lambda" {
+  name              = "/aws/lambda/${aws_lambda_function.attach.function_name}"
+  retention_in_days = 14
 }

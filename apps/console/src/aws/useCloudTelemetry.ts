@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MqttClient } from 'mqtt';
 import type { AwsConfig } from './config';
 import { completeLoginIfRedirected, getTokens, login, logout } from './auth';
-import { AwsIdentity, connectIot, getIdentity } from './iot';
+import { AwsIdentity, attachIotPolicy, connectIot, getIdentity } from './iot';
 
 export type CloudState = 'off' | 'signed-out' | 'connecting' | 'live' | 'error';
 
@@ -46,9 +46,13 @@ export function useCloudTelemetry(
   // captures the generation at start and aborts after each await if it moved.
   const genRef = useRef(0);
   // Consecutive failed dials: a broker that keeps closing the socket (e.g.
-  // the DEV-23 IoT policy not attached yet) must surface as an ERROR, not an
+  // the IoT policy still not attached) must surface as an ERROR, not an
   // eternal "connecting" — retrying continues either way.
   const failsRef = useRef(0);
+  // The IoT policy attach (C3) is per SIGN-IN, not per dial: it is idempotent
+  // but it is a network round-trip, and redials happen every 60 s when a
+  // presigned URL expires. Reset on sign-out so the next operator attaches.
+  const attachedRef = useRef(false);
 
   const dial = useCallback(async () => {
     if (!cfg) return;
@@ -57,6 +61,16 @@ export function useCloudTelemetry(
     const gen = genRef.current;
     setState('connecting');
     try {
+      // Attach the console-viewer IoT policy before the first dial of this
+      // session (C3, closes DEV-23). Deliberately awaited: without the policy
+      // the broker accepts the handshake and then closes the socket, so racing
+      // it would just produce a confusing first failure. Never throws — an
+      // operator whose policy was attached by hand still gets through here.
+      if (!attachedRef.current) {
+        await attachIotPolicy(cfg, idToken);
+        attachedRef.current = true;
+        if (gen !== genRef.current) return; // superseded while attaching
+      }
       // Refresh AWS credentials when absent or within 5 min of expiry.
       if (!identityRef.current || Date.now() > identityRef.current.expiresAt - 300_000) {
         identityRef.current = await getIdentity(cfg, idToken);
@@ -139,6 +153,8 @@ export function useCloudTelemetry(
     if (!cfg) return;
     genRef.current++; // stop redials before the logout redirect
     clientRef.current?.end(true);
+    identityRef.current = null;
+    attachedRef.current = false; // next operator on this tab attaches their own
     logout(cfg);
   }, [cfg]);
 
