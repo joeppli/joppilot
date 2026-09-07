@@ -621,8 +621,10 @@ async fn main() {
     let proposal_topic = format!("joppilot/v1/vehicles/{}/maneuver/proposal", vehicle_id); // edge → cloud
     let maneuver_status_topic = format!("joppilot/v1/vehicles/{}/maneuver/status", vehicle_id); // edge → cloud
     // Zone-config delivery (M2-5, DEV-8): retained topic locally; on AWS IoT
-    // the `zone-config` named Device Shadow delta/get topics carry the same
-    // signed document inside the shadow envelope.
+    // the `zone-config` named Device Shadow carries the same signed document
+    // inside the shadow envelope. We take it from get/accepted and
+    // update/accepted, both of which carry the WHOLE desired document —
+    // never from update/delta, which carries only the CHANGED fields.
     let zone_config_topic = format!("joppilot/v1/vehicles/{}/zone-config", vehicle_id);
     let shadow_prefix = format!("$aws/things/{}/shadow/name/zone-config", vehicle_id);
     // Offline event-log upload (RES-02, M3-6): vehicle → cloud, QoS1 batches;
@@ -636,7 +638,12 @@ async fn main() {
     client.subscribe(&zone_config_topic, QoS::AtLeastOnce).await.unwrap();
     client.subscribe(&logsync_ack_topic, QoS::AtLeastOnce).await.unwrap();
     if is_aws {
-        client.subscribe(format!("{}/update/delta", shadow_prefix), QoS::AtLeastOnce).await.unwrap();
+        // update/accepted, NOT update/delta: a delta contains only the fields
+        // that CHANGED, so re-issuing a permit for the zone the vehicle is
+        // already in produces a delta with no `vehicleId` and no `zone` — the
+        // schema rejects it as incomplete and the vehicle silently keeps its
+        // old permit. accepted always carries the full desired document.
+        client.subscribe(format!("{}/update/accepted", shadow_prefix), QoS::AtLeastOnce).await.unwrap();
         client.subscribe(format!("{}/get/accepted", shadow_prefix), QoS::AtLeastOnce).await.unwrap();
         // Ask for the current shadow so a config set while offline still lands.
         client.publish(format!("{}/get", shadow_prefix), QoS::AtLeastOnce, false, "{}").await.unwrap();
@@ -1208,7 +1215,7 @@ async fn main() {
                 let _ = c.subscribe(&t_zone, QoS::AtLeastOnce).await;
                 let _ = c.subscribe(&t_ack, QoS::AtLeastOnce).await;
                 if is_aws {
-                    let _ = c.subscribe(format!("{}/update/delta", shadow), QoS::AtLeastOnce).await;
+                    let _ = c.subscribe(format!("{}/update/accepted", shadow), QoS::AtLeastOnce).await;
                     let _ = c.subscribe(format!("{}/get/accepted", shadow), QoS::AtLeastOnce).await;
                     // A zone change set while we were offline still lands.
                     let _ = c.publish(format!("{}/get", shadow), QoS::AtLeastOnce, false, "{}").await;
@@ -1288,8 +1295,21 @@ async fn main() {
                         }
                         drop(l);
                         let mut o = sync_outstanding.lock().unwrap();
+                        // Vehicle→cloud→vehicle round-trip, measured entirely on
+                        // THIS clock: publish time was recorded here and the ack
+                        // is timed here, so the cloud/vehicle clock offset that
+                        // makes the one-way command figure unusable (DEV-25)
+                        // cancels out. This is the honest latency number for the
+                        // MQTT path (İP 2.4).
+                        let rtt_ms = o.and_then(|(sent, at)| {
+                            if sent <= up_to { Some(now_ms().saturating_sub(at)) } else { None }
+                        });
                         if o.map(|(sent, _)| sent <= up_to).unwrap_or(false) { *o = None; }
-                        println!("✅ LOG SYNC ACK: cloud confirmed events up to seq {} (RES-02).", up_to);
+                        drop(o);
+                        match rtt_ms {
+                            Some(ms) => println!("✅ LOG SYNC ACK: cloud confirmed events up to seq {} — round-trip {}ms (one clock, RES-02).", up_to, ms),
+                            None => println!("✅ LOG SYNC ACK: cloud confirmed events up to seq {} (RES-02).", up_to),
+                        }
                     }
                 }
                 continue;
@@ -1305,19 +1325,43 @@ async fn main() {
                     Ok(v) => v,
                     Err(_) => { eprintln!("⛔ Dropped non-JSON zone-config on {}", p.topic); continue; }
                 };
-                // Unwrap the Device Shadow envelope when present:
-                //   update/delta  → {"state":{"config":{...}}}
-                //   get/accepted  → {"state":{"desired":{"config":{...}}}}
-                let doc = raw.pointer("/state/desired/config")
-                    .or_else(|| raw.pointer("/state/config"))
-                    .unwrap_or(&raw)
-                    .clone();
-                if zoneconfig_schema.validate(&doc).is_err() {
-                    println!("⛔ ZONE-CONFIG IGNORED: schema invalid (fail-safe, keeping current zone).");
+                // Unwrap the Device Shadow envelope. Both topics we subscribe
+                // to nest the full document under desired:
+                //   get/accepted     → {"state":{"desired":{"config":{...}}}}
+                //   update/accepted  → {"state":{"desired":{"config":{...}}}}
+                //
+                // A shadow message with no config under there is simply not
+                // about the zone — an accepted echo of a `reported` write, for
+                // instance. Skipping it is NOT the fail-safe path being taken:
+                // treating the bare envelope as the document would report every
+                // such message as a rejected zone-config, which is noise that
+                // hides the real thing. Only the local retained topic carries
+                // the document unwrapped.
+                let doc = if p.topic.starts_with(&shadow_prefix) {
+                    match raw
+                        .pointer("/state/desired/config")
+                        .or_else(|| raw.pointer("/state/config"))
+                    {
+                        Some(c) => c.clone(),
+                        None => continue,
+                    }
+                } else {
+                    raw.clone()
+                };
+                if let Err(errs) = zoneconfig_schema.validate(&doc) {
+                    // Name the topic AND the first failures: a partial document
+                    // (e.g. a shadow delta, which carries only changed fields)
+                    // and a malformed one are indistinguishable without them,
+                    // and this rejection is otherwise silent by design.
+                    let why: Vec<String> = errs
+                        .take(3)
+                        .map(|e| format!("{} at '{}'", e, e.instance_path))
+                        .collect();
+                    println!("⛔ ZONE-CONFIG IGNORED: schema invalid on '{}' [{}] (fail-safe, keeping current zone).", p.topic, why.join("; "));
                     continue;
                 }
                 if !verify_signature(&doc, &cloud_pubkey) {
-                    println!("⛔ ZONE-CONFIG IGNORED: signature missing/invalid (fail-safe, keeping current zone).");
+                    println!("⛔ ZONE-CONFIG IGNORED: signature missing/invalid on '{}' (fail-safe, keeping current zone).", p.topic);
                     continue;
                 }
                 if doc.get("vehicleId").and_then(|v| v.as_str()) != Some(vehicle_id) {
@@ -1680,7 +1724,15 @@ async fn main() {
             // 8) Accepted ------------------------------------------------
             // Only now — past EVERY gate — does the command reach actuation.
             let _ = actuation_tx.send(command_event(&cid, &action, &envelope.payload));
-            println!("✅ COMMAND ACCEPTED '{}' mode={:?} zone='{}' ({:.4},{:.4}). ID: {}", action, envelope.mode, zone, lat, lng, cid);
+            // Cloud→vehicle one-way latency, logged for the operator-response
+            // measurements (Teknopark İP 2.4). SIGNED on purpose: the cloud and
+            // the vehicle keep independent clocks (DEV-25), so a negative value
+            // means this edge's clock trails the cloud's — it is a clock-offset
+            // reading, not a time-travelling command. Interpret a single sample
+            // as "transport + clock skew"; only the spread across many samples
+            // is a latency measurement.
+            let cloud_to_edge_ms = now_ms() as i64 - envelope.timestamp as i64;
+            println!("✅ COMMAND ACCEPTED '{}' mode={:?} zone='{}' ({:.4},{:.4}) cloud→edge={}ms. ID: {}", action, envelope.mode, zone, lat, lng, cloud_to_edge_ms, cid);
             let ack = ack_json(&cid, "ACK", None);
             remember_ack(&seen_commands, &cid, &ack);
             client.publish(&ack_topic, QoS::AtLeastOnce, false, ack).await.unwrap();

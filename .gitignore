@@ -78,6 +78,7 @@ certs/
 edge/greengrass/gg-certs/
 edge/greengrass/gg-config/
 # Vehicle-thing cert bundle mounted into the core for the VEA component
+edge/certs/
 edge/greengrass/veh-certs/
 
 # ── Databases ─────────────────────────────────────────────────

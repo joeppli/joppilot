@@ -45,8 +45,12 @@ fi
 # committed dev key — a mismatch makes the kernel NACK every command.
 [[ -n "${EDGE_CLOUD_PUBKEY:-}" ]] || die "EDGE_CLOUD_PUBKEY is not set (fill edge/vehicle.env)."
 
-if [[ "${CARLA_MOCK}" != "1" ]]; then
-  [[ -n "${IOT_ENDPOINT:-}" ]]  || die "IOT_ENDPOINT is not set (fill edge/vehicle.env)."
+# Certificates are needed whenever the kernel talks to AWS IoT — which is
+# decided by IOT_ENDPOINT, NOT by CARLA. Gating this on CARLA_MOCK left the
+# documented "prove the cloud link without CARLA" path (README-vehicle.md:
+# CARLA_MOCK=1 with a real endpoint) passing EMPTY cert paths to the kernel,
+# because the launch below reads CERT_CA/CRT/KEY that only got set in here.
+if [[ -n "${IOT_ENDPOINT:-}" ]]; then
   : "${CERT_DIR:?set CERT_DIR (folder with veh.cert.pem / veh.key.pem / veh.ca.pem) in edge/vehicle.env}"
   : "${CERT_CA:=${CERT_DIR}/veh.ca.pem}"
   : "${CERT_CRT:=${CERT_DIR}/veh.cert.pem}"
@@ -55,6 +59,9 @@ if [[ "${CARLA_MOCK}" != "1" ]]; then
     [[ -f "${f}" ]] || die "certificate file not found: ${f}"
   done
   ok "certificates present in ${CERT_DIR}"
+elif [[ "${CARLA_MOCK}" != "1" ]]; then
+  # No endpoint and not a mock run: there is nothing to connect to.
+  die "IOT_ENDPOINT is not set (fill edge/vehicle.env)."
 fi
 
 # --- 2. Prerequisites --------------------------------------------------------
