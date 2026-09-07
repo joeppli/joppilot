@@ -69,12 +69,19 @@ export async function completeLoginIfRedirected(cfg: AwsConfig): Promise<Tokens 
       code_verifier: verifier,
     }),
   });
-  // Clean the code out of the address bar either way (it is single-use).
-  url.searchParams.delete('code');
-  url.searchParams.delete('state');
-  window.history.replaceState({}, '', url.toString());
+  // The code is single-use, so it leaves the address bar either way — but only
+  // AFTER the token is stored. `operatorSessionAlive` treats "a code in the URL"
+  // and "a token in hand" as the two things that keep an operator session
+  // alive, so clearing the code first would open a window in which neither is
+  // true and a render would bounce the session back to the gate mid-exchange.
+  const cleanUrl = () => {
+    url.searchParams.delete('code');
+    url.searchParams.delete('state');
+    window.history.replaceState({}, '', url.toString());
+  };
   if (!res.ok) {
     console.error('Cognito token exchange failed', res.status, await res.text());
+    cleanUrl();
     return null;
   }
   const body = (await res.json()) as { id_token: string; access_token: string; expires_in: number };
@@ -84,6 +91,7 @@ export async function completeLoginIfRedirected(cfg: AwsConfig): Promise<Tokens 
     expiresAt: Date.now() + body.expires_in * 1000,
   };
   sessionStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+  cleanUrl();
   return tokens;
 }
 

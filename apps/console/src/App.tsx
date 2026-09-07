@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { SessionProvider } from './context/SessionContext';
 import { ModeProvider, useMode } from './mode/ModeContext';
-import type { AppMode } from './mode/mode';
+import { operatorSessionAlive, type AppMode } from './mode/mode';
 import { EntryGate } from './mode/EntryGate';
 import { AppShell } from './components/layout/AppShell';
 import { Dashboard } from './pages/Dashboard';
@@ -26,16 +26,32 @@ export default function App() {
 }
 
 /**
- * Nothing renders until a mode is chosen.
+ * Nothing renders until a mode is chosen AND, for operators, actually backed by
+ * a sign-in.
  *
  * The gate is a MOUNT boundary, not a visual overlay: SessionProvider — which
  * owns every socket, poll and AWS call — is not constructed at all while the
  * gate is up. A visitor who never picks a mode therefore causes no network
  * traffic of any kind.
+ *
+ * WHY THE SECOND CHECK IS HERE AND NOT ONLY IN readStoredMode: choosing
+ * 'operator' is not the same as being signed in. The gate stores the mode and
+ * THEN redirects to the Hosted UI, so between those two steps the mode says
+ * "operator" while no token exists — and the app used to mount into that gap
+ * and paint the whole console (sidebar, fleet, dashboard) for anyone who
+ * clicked the button. On a slow link that window is seconds long. The same gap
+ * reopens on the way back: a visitor who hits BACK from the Hosted UI returns
+ * to a document restored from the bfcache, where no module-level code reruns
+ * and the stored-mode check never happens.
+ *
+ * Evaluating it per render closes both: it holds whenever React paints,
+ * regardless of how the session got into this state. Demo is untouched — it
+ * needs no credential and never consults this branch.
  */
 function Gated() {
   const { mode } = useMode();
   if (!mode) return <EntryGate />;
+  if (mode === 'operator' && !operatorSessionAlive()) return <EntryGate />;
 
   return (
     <SessionProvider>

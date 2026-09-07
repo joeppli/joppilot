@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import { AppMode, isLocalOriginAvailable, readStoredMode, storeMode } from './mode';
 
 /**
@@ -45,6 +45,23 @@ export function ModeProvider({ children }: { children: ReactNode }) {
   const reset = useCallback(() => {
     storeMode(null);
     setMode(null);
+  }, []);
+
+  /**
+   * Re-read the stored mode when the page comes back from the bfcache.
+   *
+   * Hitting BACK from the Hosted UI restores this document frozen, not
+   * reloaded: no module-level code reruns, so the operator-session check in
+   * readStoredMode never fires and React keeps whatever state it had — an
+   * 'operator' mode with no token behind it. `persisted` is exactly that case,
+   * and re-deriving the mode there sends an abandoned sign-in back to the gate.
+   */
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) setMode(readModeFromUrl() ?? readStoredMode());
+    };
+    window.addEventListener('pageshow', onPageShow);
+    return () => window.removeEventListener('pageshow', onPageShow);
   }, []);
 
   return <Ctx.Provider value={{ mode, select, reset }}>{children}</Ctx.Provider>;
