@@ -87,9 +87,19 @@ jobs:
       # C3/DEV-23: iot-policy-attach (cognito-identity + iot clients).
       - name: Build Lambda deps
         if: ${{ vars.AWS_CI_ROLE_ARN != '' }}
+        # Overrides the job's TF_WORKDIR default — the glob is repo-relative.
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          for lock in infra/lambda/*/package-lock.json; do
+          # nullglob: an unmatched glob must expand to nothing, not to the
+          # literal pattern (which would `cd` into a path that does not exist).
+          shopt -s nullglob
+          locks=(infra/lambda/*/package-lock.json)
+          if [ ${#locks[@]} -eq 0 ]; then
+            echo "::error::No lockfiles under infra/lambda/ — archive_file would zip a Lambda with no node_modules and it would fail at runtime, not here."
+            exit 1
+          fi
+          for lock in "${locks[@]}"; do
             dir="$(dirname "$lock")"
             echo "::group::npm ci — $dir"
             (cd "$dir" && npm ci --omit=dev --ignore-scripts)
