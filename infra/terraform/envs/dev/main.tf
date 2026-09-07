@@ -72,6 +72,12 @@ module "apigw" {
   # Cognito Bearer token. Dev origin only; add the CloudFront domain with the
   # SPA hosting phase (AD-19).
   cors_allow_origins = var.console_origins
+
+  # C3 (closes DEV-23): the IoT-policy attach route. The function itself lives
+  # in module.console_identity — outside the destroy-billables target set — so
+  # only this route is recreated with the API.
+  iot_attach_lambda_invoke_arn    = module.console_identity.attach_lambda_invoke_arn
+  iot_attach_lambda_function_name = module.console_identity.attach_lambda_function_name
 }
 
 # --- M2-3c-2: VPC endpoints — private AWS API access for the private ECS task ---
@@ -345,7 +351,8 @@ module "greengrass" {
 # subscribes to telemetry/heartbeat/maneuver topics DIRECTLY on IoT Core.
 # No publish rights — commands stay on the API Gateway → Gate 1 path.
 # Free / no standing cost → NOT a destroy-billables target.
-# DEV-23: the IoT policy must be attached per operator identity (manual in dev).
+# Also holds the C3 attach Lambda that binds the IoT policy to each operator's
+# identity on first sign-in (closes DEV-23); its API route lives in module.apigw.
 module "console_identity" {
   source              = "../../modules/console-identity"
   name_prefix         = "joppilot-${var.environment}"

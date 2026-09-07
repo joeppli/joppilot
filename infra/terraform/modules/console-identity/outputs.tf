@@ -12,3 +12,13 @@ output "viewer_role_arn" {
   description = "IAM role authenticated console identities assume"
   value       = aws_iam_role.console_viewer.arn
 }
+
+output "attach_lambda_invoke_arn" {
+  description = "Invoke ARN of the DEV-23 attach function, for the API Gateway integration"
+  value       = aws_lambda_function.attach.invoke_arn
+}
+
+output "attach_lambda_function_name" {
+  description = "Name of the DEV-23 attach function, for the API Gateway invoke permission"
+  value       = aws_lambda_function.attach.function_name
+}
