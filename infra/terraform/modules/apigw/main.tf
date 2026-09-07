@@ -123,14 +123,10 @@ resource "aws_apigatewayv2_stage" "default" {
 # through to the existing unauthenticated OPTIONS route.
 #
 # The function lives in module.console_identity so it survives the teardown;
-# only this route is recreated with the API. Empty ARN = route not created,
-# which keeps the module usable standalone.
-locals {
-  iot_attach_enabled = var.iot_attach_lambda_invoke_arn != ""
-}
-
+# only this route is recreated with the API. Both inputs are required: gating
+# these resources on `invoke_arn != ""` would put an apply-time value in a
+# count, which Terraform refuses to plan.
 resource "aws_apigatewayv2_integration" "iot_attach" {
-  count                  = local.iot_attach_enabled ? 1 : 0
   api_id                 = aws_apigatewayv2_api.this.id
   integration_type       = "AWS_PROXY"
   integration_uri        = var.iot_attach_lambda_invoke_arn
@@ -139,17 +135,15 @@ resource "aws_apigatewayv2_integration" "iot_attach" {
 }
 
 resource "aws_apigatewayv2_route" "iot_attach" {
-  count              = local.iot_attach_enabled ? 1 : 0
   api_id             = aws_apigatewayv2_api.this.id
   route_key          = "POST /api/iot/attach-policy"
-  target             = "integrations/${aws_apigatewayv2_integration.iot_attach[0].id}"
+  target             = "integrations/${aws_apigatewayv2_integration.iot_attach.id}"
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
 }
 
 # Scoped to this API's execution ARN so no other API can invoke the function.
 resource "aws_lambda_permission" "iot_attach" {
-  count         = local.iot_attach_enabled ? 1 : 0
   statement_id  = "AllowInvokeFromHttpApi"
   action        = "lambda:InvokeFunction"
   function_name = var.iot_attach_lambda_function_name
