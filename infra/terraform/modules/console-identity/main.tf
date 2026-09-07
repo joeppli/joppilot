@@ -180,14 +180,25 @@ resource "aws_iam_role" "attach_lambda" {
   assume_role_policy = data.aws_iam_policy_document.attach_assume.json
 }
 
-# Least privilege, and the reason a bug in the handler cannot widen access:
-# AttachPolicy is granted for exactly ONE policy — the read-only console viewer
-# — so this function can never attach a publishing policy to anything.
+# iot:AttachPolicy authorizes on the TARGET, not on the policy being attached,
+# and a Cognito identity id ("eu-central-1:4bd2b491-…") is not an ARN — so no
+# resource pattern can match it and "*" is the only value that works. Measured,
+# not assumed: with the policy ARN here, the call was denied naming the identity
+# id as the resource.
+#
+# What still bounds this function, since IAM cannot:
+#   - the policy it attaches is fixed at DEPLOY time (IOT_POLICY_NAME below),
+#     never read from the request, so a caller cannot choose it;
+#   - the target can only be an identity of OUR pool, because the handler
+#     derives it from GetId and that call IS restricted, to this pool's ARN.
+# Both arguments are therefore out of a caller's reach; only a code change
+# could widen this, which is a weaker guarantee than an IAM boundary and is
+# the reason it is spelled out here.
 data "aws_iam_policy_document" "attach_lambda" {
   statement {
-    sid       = "AttachOnlyTheConsoleViewerPolicy"
+    sid       = "AttachPolicyAuthorizesOnTheTargetWhichHasNoArn"
     actions   = ["iot:AttachPolicy"]
-    resources = [aws_iot_policy.console_viewer.arn]
+    resources = ["*"]
   }
   statement {
     sid       = "DeriveCallerIdentityFromTheirToken"
