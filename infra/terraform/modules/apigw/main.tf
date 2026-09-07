@@ -142,7 +142,23 @@ resource "aws_apigatewayv2_route" "iot_attach" {
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
 }
 
+# The preflight needs its OWN route. "POST /api/iot/attach-policy" does not
+# match an OPTIONS request, so the preflight falls to "OPTIONS /{proxy+}" above,
+# which targets the ALB — and the ALB has no backend for this path, so it
+# answers 503 and the browser rejects the preflight before sending the POST.
+# Pointing it at the same Lambda (which returns 204 for OPTIONS) keeps the
+# preflight off the ECS path entirely, so it also works while ECS is torn down.
+# NONE, like the catch-all preflight route: a preflight carries no Authorization
+# header, so requiring JWT here would 401 every browser call.
+resource "aws_apigatewayv2_route" "iot_attach_preflight" {
+  api_id             = aws_apigatewayv2_api.this.id
+  route_key          = "OPTIONS /api/iot/attach-policy"
+  target             = "integrations/${aws_apigatewayv2_integration.iot_attach.id}"
+  authorization_type = "NONE"
+}
+
 # Scoped to this API's execution ARN so no other API can invoke the function.
+# The method wildcard covers both the POST and the OPTIONS route above.
 resource "aws_lambda_permission" "iot_attach" {
   statement_id  = "AllowInvokeFromHttpApi"
   action        = "lambda:InvokeFunction"
