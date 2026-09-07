@@ -4,7 +4,7 @@ output "identity_pool_id" {
 }
 
 output "iot_policy_name" {
-  description = "IoT policy to attach per operator identity (DEV-23)"
+  description = "IoT policy attached to each operator identity on first sign-in (see aws_lambda_function.attach)"
   value       = aws_iot_policy.console_viewer.name
 }
 
